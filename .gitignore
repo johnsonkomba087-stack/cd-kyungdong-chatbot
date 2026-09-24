@@ -48,6 +48,38 @@ Generated\ Files/
 # NUnit
 *.VisualState.xml
 TestResult.xml
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/cache/
+chroma_db/
+.chroma/
+*.sqlite3
+
+# Database
+*.db
+*.sqlite
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
 nunit-*.xml
 
 # Build Results of an ATL Project
