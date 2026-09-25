@@ -248,10 +248,122 @@ Always maintain a professional and welcoming tone."""
             print(f"Error with {model_name}: {e}")
             raise
 
+    def _build_style_instruction(self, style_options: dict | None) -> str:
+        """Build user-facing style instruction for human-like interactions."""
+        if not style_options:
+            return ""
+
+        tone = style_options.get("tone", "Friendly")
+        detail_level = style_options.get("detail_level", "Balanced")
+        response_language = style_options.get("response_language", "English")
+
+        return (
+            f"Response style: tone={tone}, detail={detail_level}, language={response_language}. "
+            "Sound natural and conversational, but stay factual. "
+            "When confident, answer directly in the first sentence. "
+            "When uncertain, explicitly say you don't know based on official data."
+        )
+
+    def generate_follow_up_suggestions(
+        self,
+        query: str,
+        retrieved_docs: List[RetrievedDocument],
+        limit: int = 3
+    ) -> List[str]:
+        """Generate actionable follow-up question suggestions."""
+        query_lower = query.lower()
+        suggestions = []
+
+        keyword_map = {
+            "admission": [
+                "What documents are required for this application?",
+                "What are the key application deadlines?",
+                "Who should I contact for admissions support?",
+            ],
+            "scholar": [
+                "Which scholarships can international students apply for?",
+                "How do scholarship and tuition payments work?",
+                "Are there partial scholarships for first-year students?",
+            ],
+            "program": [
+                "Which majors are taught fully in English?",
+                "Can you compare undergraduate and graduate options?",
+                "What career paths match these programs?",
+            ],
+            "housing": [
+                "What are the dormitory options and costs?",
+                "What facilities are available in student housing?",
+                "How do I apply for campus accommodation?",
+            ],
+            "tuition": [
+                "Can you break down annual tuition and living costs?",
+                "What payment methods are available?",
+                "Are there fee differences by program?",
+            ],
+            "service": [
+                "What student support services are available for newcomers?",
+                "How does career support work at KDU Global?",
+                "Where can I get counseling or human rights support?",
+            ],
+        }
+
+        for key, mapped in keyword_map.items():
+            if key in query_lower:
+                suggestions.extend(mapped)
+                break
+
+        if not suggestions and retrieved_docs:
+            top_category = retrieved_docs[0].category
+            category_defaults = {
+                "admissions": [
+                    "Can you explain the application process step by step?",
+                    "What are the minimum language score requirements?",
+                    "When should I apply for the next intake?",
+                ],
+                "academics": [
+                    "Which courses are available in English?",
+                    "Can you summarize program options by campus?",
+                    "What is the difference between undergraduate and graduate tracks?",
+                ],
+                "fees": [
+                    "Can you summarize tuition and scholarship information?",
+                    "Are there additional fees besides tuition?",
+                    "What financial support is available?",
+                ],
+                "campus_life": [
+                    "What is student life like on campus?",
+                    "Can you describe housing and facilities?",
+                    "What events and clubs are available?",
+                ],
+                "student_services": [
+                    "What support services are available for international students?",
+                    "How can students get career guidance?",
+                    "Where can students access counseling support?",
+                ],
+            }
+            suggestions.extend(category_defaults.get(top_category, []))
+
+        if not suggestions:
+            suggestions = [
+                "Tell me about admissions requirements for international students.",
+                "What programs are available at KDU Global Campus?",
+                "What scholarships and tuition options should I know about?",
+            ]
+
+        unique = []
+        for suggestion in suggestions:
+            if suggestion not in unique:
+                unique.append(suggestion)
+            if len(unique) >= limit:
+                break
+
+        return unique
+
     def generate_response(
         self,
         query: str,
-        retrieved_docs: List[RetrievedDocument]
+        retrieved_docs: List[RetrievedDocument],
+        style_options: dict | None = None
     ) -> Tuple[str, List[RetrievedDocument]]:
         """Generate response using Groq with retrieved context."""
         confidence = self._assess_confidence(retrieved_docs)
@@ -283,9 +395,11 @@ Always maintain a professional and welcoming tone."""
             else "Confidence: MEDIUM. Be cautious, mention uncertainty where needed, and do not over-claim."
         )
 
+        style_instruction = self._build_style_instruction(style_options)
+
         messages.append({
             "role": "user",
-            "content": f"{context}{confidence_instruction}\nUser question: {query}"
+            "content": f"{context}{confidence_instruction}\n{style_instruction}\nUser question: {query}"
         })
 
         try:

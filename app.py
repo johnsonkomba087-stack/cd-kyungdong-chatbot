@@ -7,6 +7,7 @@ import sys
 import streamlit as st
 from pathlib import Path
 from datetime import datetime
+import json
 
 # Suppress warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -203,6 +204,28 @@ def main():
         """)
         
         st.markdown("---")
+
+        st.markdown("### 🧠 Chat Experience")
+        st.session_state.response_tone = st.selectbox(
+            "Tone",
+            ["Friendly", "Professional", "Conversational"],
+            index=0,
+            key="response_tone_selector",
+        )
+        st.session_state.response_detail = st.selectbox(
+            "Detail Level",
+            ["Concise", "Balanced", "Detailed"],
+            index=1,
+            key="response_detail_selector",
+        )
+        st.session_state.response_language = st.selectbox(
+            "Response Language",
+            ["English", "Korean", "Auto"],
+            index=0,
+            key="response_language_selector",
+        )
+
+        st.markdown("---")
         
         st.markdown("### 🎯 Quick Topics")
         topics = {
@@ -225,6 +248,19 @@ def main():
             if st.session_state.get("chatbot"):
                 st.session_state.chatbot.clear_history()
             st.success("✅ Chat history cleared!")
+
+        if st.button("📥 Export Chat (JSON)", use_container_width=True):
+            export_payload = {
+                "exported_at": datetime.now().isoformat(),
+                "messages": st.session_state.get("messages", []),
+            }
+            st.download_button(
+                "Download chat_export.json",
+                data=json.dumps(export_payload, ensure_ascii=False, indent=2),
+                file_name="chat_export.json",
+                mime="application/json",
+                use_container_width=True,
+            )
 
         st.markdown("---")
 
@@ -302,13 +338,29 @@ def main():
         st.session_state.documents_loaded = False
     
     # Display conversation history
-    for message in st.session_state.get("messages", []):
+    messages = st.session_state.get("messages", [])
+    assistant_indexes = [i for i, m in enumerate(messages) if m.get("role") == "assistant"]
+    last_assistant_index = assistant_indexes[-1] if assistant_indexes else -1
+
+    for msg_index, message in enumerate(messages):
         with st.chat_message(message["role"], avatar="👤" if message["role"] == "user" else "🤖"):
             st.markdown(message["content"])
             
             # Display sources for assistant messages
             if message["role"] == "assistant" and "sources" in message:
                 display_sources(message["sources"])
+
+            # Display follow-up buttons only for the latest assistant message
+            if (
+                message["role"] == "assistant"
+                and "followups" in message
+                and msg_index == last_assistant_index
+            ):
+                st.markdown("### 💬 Suggested Follow-up Questions")
+                for follow_idx, suggestion in enumerate(message["followups"], 1):
+                    if st.button(suggestion, key=f"followup_{msg_index}_{follow_idx}"):
+                        st.session_state.suggested_question = suggestion
+                        st.rerun()
     
     # Handle suggested question
     user_input = None
@@ -350,7 +402,16 @@ def main():
                 st.warning(f"⚠️ No relevant documents found - generating general response")
             
             with st.spinner("💭 Generating response..."):
-                response, docs_used = chatbot.generate_response(user_input, retrieved_docs)
+                style_options = {
+                    "tone": st.session_state.get("response_tone", "Friendly"),
+                    "detail_level": st.session_state.get("response_detail", "Balanced"),
+                    "response_language": st.session_state.get("response_language", "English"),
+                }
+                response, docs_used = chatbot.generate_response(
+                    user_input,
+                    retrieved_docs,
+                    style_options=style_options,
+                )
             
             st.markdown(response)
             
@@ -363,7 +424,8 @@ def main():
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": response,
-                "sources": docs_used
+                "sources": docs_used,
+                "followups": chatbot.generate_follow_up_suggestions(user_input, docs_used, limit=3),
             })
 
 
