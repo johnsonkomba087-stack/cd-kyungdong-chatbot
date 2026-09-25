@@ -4,10 +4,23 @@ Streamlit web interface for Kyungdong University RAG Chatbot
 
 import os
 import sys
-import streamlit as st
-from pathlib import Path
-from datetime import datetime
 import json
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import quote
+
+import streamlit as st
+
+try:
+    from gtts import gTTS
+except Exception:  # pragma: no cover
+    gTTS = None
+
+try:
+    from streamlit_mic_recorder import mic_recorder
+except Exception:  # pragma: no cover
+    mic_recorder = None
 
 # Suppress warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -32,6 +45,133 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.chatbot_rag import KyungdongRAGChatbot
 from src.knowledge_base import get_official_source_pages, load_knowledge_base
+
+
+APP_ROOT = Path(__file__).resolve().parent
+CACHE_DIR = APP_ROOT / ".cache"
+PROFILE_FILE = CACHE_DIR / "user_profiles.json"
+ANALYTICS_FILE = CACHE_DIR / "analytics_events.json"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _read_json(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def _write_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _default_profile() -> dict:
+    return {
+        "response_tone": "Friendly",
+        "response_detail": "Balanced",
+        "response_language": "English",
+        "voice_input_enabled": False,
+        "tts_enabled": False,
+        "tool_use_enabled": True,
+        "notes": "",
+    }
+
+
+def load_user_profile(username: str) -> dict:
+    payload = _read_json(PROFILE_FILE, {"users": {}})
+    profile = payload.get("users", {}).get(username, {})
+    merged = _default_profile()
+    merged.update(profile)
+    return merged
+
+
+def save_user_profile(username: str, profile: dict) -> None:
+    payload = _read_json(PROFILE_FILE, {"users": {}})
+    users = payload.setdefault("users", {})
+    users[username] = profile
+    _write_json(PROFILE_FILE, payload)
+
+
+def record_analytics_event(event: dict) -> str:
+    payload = _read_json(ANALYTICS_FILE, {"events": [], "feedback": {"up": 0, "down": 0}})
+    event_id = f"evt-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+    event["event_id"] = event_id
+    payload.setdefault("events", []).append(event)
+    payload["events"] = payload["events"][-1000:]
+    _write_json(ANALYTICS_FILE, payload)
+    return event_id
+
+
+def record_feedback(event_id: str, vote: str) -> None:
+    payload = _read_json(ANALYTICS_FILE, {"events": [], "feedback": {"up": 0, "down": 0}})
+    feedback = payload.setdefault("feedback", {"up": 0, "down": 0})
+
+    if vote == "up":
+        feedback["up"] = int(feedback.get("up", 0)) + 1
+    elif vote == "down":
+        feedback["down"] = int(feedback.get("down", 0)) + 1
+
+    for event in payload.get("events", []):
+        if event.get("event_id") == event_id:
+            event["feedback"] = vote
+            break
+
+    _write_json(ANALYTICS_FILE, payload)
+
+
+def get_analytics_snapshot() -> dict:
+    payload = _read_json(ANALYTICS_FILE, {"events": [], "feedback": {"up": 0, "down": 0}})
+    events = payload.get("events", [])
+    total = len(events)
+    unknown = sum(1 for e in events if e.get("unknown"))
+    moderated = sum(1 for e in events if e.get("moderated"))
+    avg_docs = (sum(int(e.get("retrieved_count", 0)) for e in events) / total) if total else 0.0
+    topics = Counter(e.get("topic", "general") for e in events)
+    tools = Counter(e.get("tool_action", "none") for e in events if e.get("tool_action") and e.get("tool_action") != "none")
+    feedback = payload.get("feedback", {"up": 0, "down": 0})
+    up = int(feedback.get("up", 0))
+    down = int(feedback.get("down", 0))
+    quality = (up / max(up + down, 1)) * 100.0 if (up + down) else 0.0
+
+    return {
+        "total_queries": total,
+        "unknown_rate": (unknown / total * 100.0) if total else 0.0,
+        "moderation_rate": (moderated / total * 100.0) if total else 0.0,
+        "avg_retrieved_docs": avg_docs,
+        "top_topics": topics.most_common(5),
+        "tools_used": tools.most_common(5),
+        "feedback_up": up,
+        "feedback_down": down,
+        "quality_score": quality,
+    }
+
+
+def synthesize_tts_audio(text: str, language: str) -> bytes:
+    if not text or gTTS is None:
+        return b""
+
+    lang_code = "en"
+    if language.lower().startswith("korean"):
+        lang_code = "ko"
+
+    try:
+        from io import BytesIO
+
+        fp = BytesIO()
+        gTTS(text=text[:3000], lang=lang_code).write_to_fp(fp)
+        return fp.getvalue()
+    except Exception:
+        return b""
+
+
+def _safe_index(options: list[str], selected: str, default: int = 0) -> int:
+    try:
+        return options.index(selected)
+    except ValueError:
+        return default
 
 
 def _is_placeholder(value: str) -> bool:
@@ -180,6 +320,68 @@ def display_sources(retrieved_docs) -> None:
         st.info("ℹ️ No related documents found - generating response from general knowledge")
 
 
+def display_tool_payload(tool_action: str, payload: dict | None, event_id: str = "") -> None:
+    """Render tool-action outputs in chat."""
+    if not payload:
+        return
+
+    if tool_action == "web_search":
+        results = payload.get("results", [])
+        if results:
+            st.markdown("### 🌐 Web Results")
+            for idx, item in enumerate(results, 1):
+                title = item.get("title", f"Result {idx}")
+                snippet = item.get("snippet", "")
+                url = item.get("url", "")
+                st.markdown(f"**{idx}. {title}**")
+                if snippet:
+                    st.write(snippet)
+                if url:
+                    st.markdown(f"[Open link]({url})")
+
+    elif tool_action == "calendar":
+        st.markdown("### 📅 Calendar Draft")
+        st.write(f"Title: {payload.get('title', 'Event')}")
+        st.write(f"Start: {payload.get('start', '')}")
+        st.write(f"End: {payload.get('end', '')}")
+        st.download_button(
+            "Download .ics file",
+            data=payload.get("ics", ""),
+            file_name="kdu_event.ics",
+            mime="text/calendar",
+            key=f"ics_download_{event_id or 'default'}",
+        )
+
+    elif tool_action == "email":
+        st.markdown("### ✉️ Email Draft")
+        to = payload.get("to", "")
+        subject = payload.get("subject", "")
+        body = payload.get("body", "")
+        st.write(f"To: {to}")
+        st.write(f"Subject: {subject}")
+        st.text_area("Body", value=body, height=140, key=f"email_body_{event_id or 'default'}")
+
+        mailto = f"mailto:{to}?subject={quote(subject)}&body={quote(body)}"
+        st.markdown(f"[Open in mail app]({mailto})")
+
+
+def _serialize_messages_for_export(messages: list[dict]) -> list[dict]:
+    """Convert chat messages to JSON-safe payload."""
+    serialized = []
+    for message in messages:
+        item = dict(message)
+        if item.get("sources"):
+            clean_sources = []
+            for source in item.get("sources", []):
+                if hasattr(source, "__dict__"):
+                    clean_sources.append(dict(source.__dict__))
+                elif isinstance(source, dict):
+                    clean_sources.append(source)
+            item["sources"] = clean_sources
+        serialized.append(item)
+    return serialized
+
+
 def main():
     # Header
     st.markdown('<h1 class="main-header">🎓 Kyungdong University Global Campus</h1>', unsafe_allow_html=True)
@@ -205,25 +407,104 @@ def main():
         
         st.markdown("---")
 
+        st.markdown("### 👤 User Profile")
+        username = st.text_input(
+            "Profile Name",
+            value=st.session_state.get("profile_name", "guest"),
+            key="profile_name_input",
+            help="Use the same profile name to keep long-term preferences.",
+        ).strip() or "guest"
+
+        if st.session_state.get("profile_name") != username:
+            profile = load_user_profile(username)
+            st.session_state.profile_name = username
+            st.session_state.response_tone = profile["response_tone"]
+            st.session_state.response_detail = profile["response_detail"]
+            st.session_state.response_language = profile["response_language"]
+            st.session_state.voice_input_enabled = profile["voice_input_enabled"]
+            st.session_state.tts_enabled = profile["tts_enabled"]
+            st.session_state.tool_use_enabled = profile["tool_use_enabled"]
+            st.session_state.profile_notes = profile.get("notes", "")
+
         st.markdown("### 🧠 Chat Experience")
         st.session_state.response_tone = st.selectbox(
             "Tone",
             ["Friendly", "Professional", "Conversational"],
-            index=0,
+            index=_safe_index(["Friendly", "Professional", "Conversational"], st.session_state.get("response_tone", "Friendly"), default=0),
             key="response_tone_selector",
         )
         st.session_state.response_detail = st.selectbox(
             "Detail Level",
             ["Concise", "Balanced", "Detailed"],
-            index=1,
+            index=_safe_index(["Concise", "Balanced", "Detailed"], st.session_state.get("response_detail", "Balanced"), default=1),
             key="response_detail_selector",
         )
         st.session_state.response_language = st.selectbox(
             "Response Language",
             ["English", "Korean", "Auto"],
-            index=0,
+            index=_safe_index(["English", "Korean", "Auto"], st.session_state.get("response_language", "English"), default=0),
             key="response_language_selector",
         )
+
+        st.session_state.voice_input_enabled = st.checkbox(
+            "Enable Voice Input",
+            value=st.session_state.get("voice_input_enabled", False),
+            key="voice_input_toggle",
+        )
+        st.session_state.tts_enabled = st.checkbox(
+            "Enable Text-to-Speech",
+            value=st.session_state.get("tts_enabled", False),
+            key="tts_toggle",
+        )
+        st.session_state.tool_use_enabled = st.checkbox(
+            "Enable Tool Actions (Web/Calendar/Email)",
+            value=st.session_state.get("tool_use_enabled", True),
+            key="tool_toggle",
+        )
+        st.session_state.profile_notes = st.text_area(
+            "Preference Notes",
+            value=st.session_state.get("profile_notes", ""),
+            height=80,
+            key="profile_notes_editor",
+            help="Saved long-term with this profile.",
+        )
+
+        if st.button("💾 Save Profile", use_container_width=True):
+            save_user_profile(
+                st.session_state.get("profile_name", "guest"),
+                {
+                    "response_tone": st.session_state.get("response_tone", "Friendly"),
+                    "response_detail": st.session_state.get("response_detail", "Balanced"),
+                    "response_language": st.session_state.get("response_language", "English"),
+                    "voice_input_enabled": st.session_state.get("voice_input_enabled", False),
+                    "tts_enabled": st.session_state.get("tts_enabled", False),
+                    "tool_use_enabled": st.session_state.get("tool_use_enabled", True),
+                    "notes": st.session_state.get("profile_notes", ""),
+                },
+            )
+            st.success("Profile saved")
+
+        with st.expander("📊 Analytics Dashboard", expanded=False):
+            snapshot = get_analytics_snapshot()
+            st.metric("Total Queries", snapshot["total_queries"])
+            st.metric("Unknown Rate", f"{snapshot['unknown_rate']:.1f}%")
+            st.metric("Moderation Trigger Rate", f"{snapshot['moderation_rate']:.1f}%")
+            st.metric("Conversation Quality", f"{snapshot['quality_score']:.1f}%")
+            st.caption(f"Average retrieved docs per query: {snapshot['avg_retrieved_docs']:.2f}")
+
+            st.markdown("**Top Topics**")
+            if snapshot["top_topics"]:
+                for topic, count in snapshot["top_topics"]:
+                    st.write(f"- {topic}: {count}")
+            else:
+                st.write("- No data yet")
+
+            st.markdown("**Tool Usage**")
+            if snapshot["tools_used"]:
+                for tool, count in snapshot["tools_used"]:
+                    st.write(f"- {tool}: {count}")
+            else:
+                st.write("- No tool calls yet")
 
         st.markdown("---")
         
@@ -252,7 +533,7 @@ def main():
         if st.button("📥 Export Chat (JSON)", use_container_width=True):
             export_payload = {
                 "exported_at": datetime.now().isoformat(),
-                "messages": st.session_state.get("messages", []),
+                "messages": _serialize_messages_for_export(st.session_state.get("messages", [])),
             }
             st.download_button(
                 "Download chat_export.json",
@@ -347,8 +628,15 @@ def main():
             st.markdown(message["content"])
             
             # Display sources for assistant messages
-            if message["role"] == "assistant" and "sources" in message:
+            if message["role"] == "assistant" and message.get("sources"):
                 display_sources(message["sources"])
+
+            if message["role"] == "assistant" and message.get("tool_action"):
+                display_tool_payload(
+                    message.get("tool_action", ""),
+                    message.get("tool_payload", {}),
+                    event_id=message.get("event_id", ""),
+                )
 
             # Display follow-up buttons only for the latest assistant message
             if (
@@ -361,18 +649,50 @@ def main():
                     if st.button(suggestion, key=f"followup_{msg_index}_{follow_idx}"):
                         st.session_state.suggested_question = suggestion
                         st.rerun()
+
+            if message["role"] == "assistant" and msg_index == last_assistant_index:
+                event_id = message.get("event_id", "")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("👍 Helpful", key=f"feedback_up_{msg_index}") and event_id:
+                        record_feedback(event_id, "up")
+                        st.success("Thanks for the feedback")
+                with col2:
+                    if st.button("👎 Needs improvement", key=f"feedback_down_{msg_index}") and event_id:
+                        record_feedback(event_id, "down")
+                        st.info("Feedback recorded")
     
-    # Handle suggested question
+    # Handle suggested question, voice input, or chat input
     user_input = None
     if "suggested_question" in st.session_state:
         user_input = st.session_state.suggested_question
         del st.session_state.suggested_question
     else:
-        # Chat input
-        user_input = st.chat_input(
-            "Ask about admissions, programs, scholarships, campus life, or student services...",
-            key="chat_input"
-        )
+        if st.session_state.get("voice_input_enabled", False):
+            if mic_recorder is None:
+                st.caption("Voice input dependency missing: install streamlit-mic-recorder")
+            else:
+                st.markdown("### 🎙️ Voice Input")
+                audio_data = mic_recorder(
+                    start_prompt="Start recording",
+                    stop_prompt="Stop recording",
+                    key="voice_recorder",
+                )
+                if audio_data and audio_data.get("bytes"):
+                    audio_bytes = audio_data.get("bytes", b"")
+                    signature = f"{len(audio_bytes)}-{hash(audio_bytes[:64])}"
+                    if signature != st.session_state.get("last_voice_signature"):
+                        st.session_state.last_voice_signature = signature
+                        transcribed = chatbot.transcribe_audio(audio_bytes, language="en")
+                        if transcribed:
+                            user_input = transcribed
+                            st.info(f"Transcribed: {transcribed}")
+
+        if not user_input:
+            user_input = st.chat_input(
+                "Ask about admissions, programs, scholarships, campus life, or student services...",
+                key="chat_input"
+            )
     
     # Process user input
     if user_input:
@@ -390,35 +710,97 @@ def main():
         with st.chat_message("user", avatar="👤"):
             st.markdown(user_input)
         
+        moderation = chatbot.moderate_user_input(user_input)
+        topic = chatbot.infer_query_topic(user_input)
+
         # Generate response
         with st.chat_message("assistant", avatar="🤖"):
-            with st.spinner("🔍 Searching knowledge base..."):
-                retrieved_docs = chatbot.retrieve_documents(user_input, top_k=3)
-            
-            # Show retrieval status
-            if len(retrieved_docs) > 0:
-                st.success(f"✓ Found {len(retrieved_docs)} relevant document(s)")
+            retrieved_docs = []
+            docs_used = []
+            tool_action = "none"
+            tool_payload = {}
+            unknown = False
+            moderated = False
+
+            if not moderation.allowed:
+                moderated = True
+                response = moderation.reason
+                st.warning("Request blocked by safety layer")
             else:
-                st.warning(f"⚠️ No relevant documents found - generating general response")
-            
-            with st.spinner("💭 Generating response..."):
-                style_options = {
-                    "tone": st.session_state.get("response_tone", "Friendly"),
-                    "detail_level": st.session_state.get("response_detail", "Balanced"),
-                    "response_language": st.session_state.get("response_language", "English"),
-                }
-                response, docs_used = chatbot.generate_response(
-                    user_input,
-                    retrieved_docs,
-                    style_options=style_options,
-                )
+                tool_result = None
+                if st.session_state.get("tool_use_enabled", True):
+                    tool_result = chatbot.handle_tool_action(user_input)
+
+                if tool_result and tool_result.handled:
+                    tool_action = tool_result.action
+                    tool_payload = tool_result.payload or {}
+                    response = tool_result.response
+                else:
+                    with st.spinner("🔍 Searching knowledge base..."):
+                        retrieved_docs = chatbot.retrieve_documents(user_input, top_k=3)
+
+                    if len(retrieved_docs) > 0:
+                        st.success(f"✓ Found {len(retrieved_docs)} relevant document(s)")
+                    else:
+                        st.warning("⚠️ No relevant documents found - generating general response")
+
+                    with st.spinner("💭 Generating response..."):
+                        style_options = {
+                            "tone": st.session_state.get("response_tone", "Friendly"),
+                            "detail_level": st.session_state.get("response_detail", "Balanced"),
+                            "response_language": st.session_state.get("response_language", "English"),
+                        }
+                        response, docs_used = chatbot.generate_response(
+                            user_input,
+                            retrieved_docs,
+                            style_options=style_options,
+                        )
+
+                unknown = "i don't know based on official data currently loaded" in response.lower()
             
             st.markdown(response)
-            
+
+            if tool_action != "none":
+                display_tool_payload(tool_action, tool_payload)
+
             # Display sources
             if retrieved_docs:
                 st.divider()
                 display_sources(retrieved_docs)
+
+            if st.session_state.get("tts_enabled", False):
+                tts_audio = synthesize_tts_audio(
+                    response,
+                    st.session_state.get("response_language", "English"),
+                )
+                if tts_audio:
+                    st.audio(tts_audio, format="audio/mp3")
+
+            event_id = record_analytics_event(
+                {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "profile": st.session_state.get("profile_name", "guest"),
+                    "query": user_input,
+                    "topic": topic,
+                    "retrieved_count": len(retrieved_docs),
+                    "unknown": unknown,
+                    "moderated": moderated,
+                    "tool_action": tool_action,
+                }
+            )
+
+            save_user_profile(
+                st.session_state.get("profile_name", "guest"),
+                {
+                    "response_tone": st.session_state.get("response_tone", "Friendly"),
+                    "response_detail": st.session_state.get("response_detail", "Balanced"),
+                    "response_language": st.session_state.get("response_language", "English"),
+                    "voice_input_enabled": st.session_state.get("voice_input_enabled", False),
+                    "tts_enabled": st.session_state.get("tts_enabled", False),
+                    "tool_use_enabled": st.session_state.get("tool_use_enabled", True),
+                    "notes": st.session_state.get("profile_notes", ""),
+                },
+            )
             
             # Store message with sources
             st.session_state.messages.append({
@@ -426,6 +808,9 @@ def main():
                 "content": response,
                 "sources": docs_used,
                 "followups": chatbot.generate_follow_up_suggestions(user_input, docs_used, limit=3),
+                "tool_action": tool_action,
+                "tool_payload": tool_payload,
+                "event_id": event_id,
             })
 
 

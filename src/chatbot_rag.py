@@ -3,10 +3,13 @@ Kyungdong University website-backed chatbot.
 """
 
 import re
+from datetime import datetime, timedelta
 from collections import Counter
 from dataclasses import dataclass
-from typing import List, Tuple
+from io import BytesIO
+from typing import Dict, List, Tuple
 
+import requests
 from groq import Groq
 
 
@@ -19,6 +22,24 @@ class RetrievedDocument:
     relevance_score: float
     url: str = ""
     category: str = "general"
+
+
+@dataclass
+class ModerationResult:
+    """Result of input moderation checks."""
+
+    allowed: bool
+    reason: str = ""
+
+
+@dataclass
+class ToolActionResult:
+    """Result for internal tool-style actions."""
+
+    action: str
+    handled: bool
+    response: str = ""
+    payload: Dict | None = None
 
 
 class KyungdongRAGChatbot:
@@ -80,6 +101,24 @@ Always maintain a professional and welcoming tone."""
             "fees", "cost", "housing", "dorm", "dormitory", "facilities", "student", "services", "career",
             "counselling", "counseling", "parttime", "visa", "international", "goseong", "gangwon"
         }
+
+        self.jailbreak_patterns = [
+            r"ignore\s+previous\s+instructions",
+            r"ignore\s+all\s+instructions",
+            r"reveal\s+system\s+prompt",
+            r"developer\s+message",
+            r"act\s+as\s+.*without\s+restrictions",
+            r"bypass\s+safety",
+            r"jailbreak",
+            r"prompt\s+injection",
+        ]
+
+        self.harmful_patterns = [
+            r"\b(how to make a bomb|build a bomb|explosive recipe)\b",
+            r"\b(kill someone|murder someone|assassinate)\b",
+            r"\b(hack account|steal password|phishing kit)\b",
+            r"\b(child porn|sexual with minors|minor sexual)\b",
+        ]
 
     def ensure_collection_exists(self):
         """Compatibility method for the UI; returns current document count."""
@@ -209,11 +248,231 @@ Always maintain a professional and welcoming tone."""
         best_category = max(scores, key=scores.get)
         return best_category if scores[best_category] > 0 else ""
 
+    def infer_query_topic(self, query: str) -> str:
+        """Infer user query topic for analytics and routing."""
+        query_terms = self._tokenize(query)
+        return self._infer_intent_category(query_terms) or "general"
+
     def _is_domain_query(self, query_terms: List[str]) -> bool:
         """Return True when query appears related to university/helpdesk domain."""
         if not query_terms:
             return False
         return any(term in self.domain_keywords for term in query_terms)
+
+    def moderate_user_input(self, query: str) -> ModerationResult:
+        """Run lightweight moderation and prompt-injection checks."""
+        lowered = query.lower()
+
+        for pattern in self.harmful_patterns:
+            if re.search(pattern, lowered):
+                return ModerationResult(
+                    allowed=False,
+                    reason=(
+                        "I cannot help with harmful or unsafe requests. "
+                        "Please ask about Kyungdong University topics instead."
+                    ),
+                )
+
+        for pattern in self.jailbreak_patterns:
+            if re.search(pattern, lowered):
+                return ModerationResult(
+                    allowed=False,
+                    reason=(
+                        "I cannot follow requests to bypass safety rules or reveal hidden instructions. "
+                        "Please ask a normal campus-related question."
+                    ),
+                )
+
+        return ModerationResult(allowed=True)
+
+    def _search_web(self, query: str, max_results: int = 3) -> List[dict]:
+        """Fetch quick web results from DuckDuckGo Instant Answer API."""
+        endpoint = "https://api.duckduckgo.com/"
+        params = {
+            "q": query,
+            "format": "json",
+            "no_html": 1,
+            "skip_disambig": 1,
+        }
+
+        response = requests.get(endpoint, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        results = []
+        abstract = (data.get("AbstractText") or "").strip()
+        abstract_url = (data.get("AbstractURL") or "").strip()
+        if abstract:
+            results.append({"title": "Instant Answer", "snippet": abstract, "url": abstract_url})
+
+        related = data.get("RelatedTopics") or []
+        for item in related:
+            if len(results) >= max_results:
+                break
+            if isinstance(item, dict) and item.get("Text"):
+                results.append(
+                    {
+                        "title": (item.get("FirstURL") or "Result").split("/")[-1].replace("_", " "),
+                        "snippet": item.get("Text", ""),
+                        "url": item.get("FirstURL", ""),
+                    }
+                )
+            elif isinstance(item, dict) and item.get("Topics"):
+                for nested in item.get("Topics", []):
+                    if len(results) >= max_results:
+                        break
+                    if nested.get("Text"):
+                        results.append(
+                            {
+                                "title": (nested.get("FirstURL") or "Result").split("/")[-1].replace("_", " "),
+                                "snippet": nested.get("Text", ""),
+                                "url": nested.get("FirstURL", ""),
+                            }
+                        )
+
+        return results[:max_results]
+
+    def _create_calendar_event(self, query: str) -> dict:
+        """Generate a simple calendar event and ICS content."""
+        start = datetime.now().replace(second=0, microsecond=0) + timedelta(days=1)
+        end = start + timedelta(hours=1)
+        uid = f"kdu-chatbot-{int(start.timestamp())}@kduniv-chatbot"
+
+        title = "KDU Follow-up Task"
+        if "admission" in query.lower():
+            title = "KDU Admissions Follow-up"
+        elif "scholar" in query.lower():
+            title = "KDU Scholarship Follow-up"
+
+        description = f"Generated from chatbot request: {query}"
+        ics_content = (
+            "BEGIN:VCALENDAR\n"
+            "VERSION:2.0\n"
+            "PRODID:-//KDU Chatbot//EN\n"
+            "BEGIN:VEVENT\n"
+            f"UID:{uid}\n"
+            f"DTSTAMP:{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}\n"
+            f"DTSTART:{start.strftime('%Y%m%dT%H%M%S')}\n"
+            f"DTEND:{end.strftime('%Y%m%dT%H%M%S')}\n"
+            f"SUMMARY:{title}\n"
+            f"DESCRIPTION:{description}\n"
+            "END:VEVENT\n"
+            "END:VCALENDAR\n"
+        )
+
+        return {
+            "title": title,
+            "description": description,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "ics": ics_content,
+        }
+
+    def _create_email_draft(self, query: str) -> dict:
+        """Build a safe email draft payload the user can send manually."""
+        subject = "Inquiry about Kyungdong University Global Campus"
+        if "scholar" in query.lower():
+            subject = "Scholarship Inquiry - Kyungdong University"
+        elif "admission" in query.lower() or "apply" in query.lower():
+            subject = "Admissions Inquiry - Kyungdong University"
+
+        body = (
+            "Hello KDU Global Team,\n\n"
+            "I would like to request information regarding the following:\n"
+            f"- {query}\n\n"
+            "Thank you for your assistance.\n"
+            "Best regards"
+        )
+
+        return {
+            "to": "info@kduniv.ac.kr",
+            "subject": subject,
+            "body": body,
+        }
+
+    def handle_tool_action(self, query: str) -> ToolActionResult:
+        """Handle lightweight tool-style user requests (web, calendar, email drafts)."""
+        lowered = query.lower().strip()
+
+        web_triggers = ["/search ", "search web", "web search", "look up", "find online"]
+        if any(trigger in lowered for trigger in web_triggers):
+            search_query = query
+            if lowered.startswith("/search "):
+                search_query = query[8:].strip()
+            search_query = re.sub(r"(?i)search\s+web\s+for\s+", "", search_query).strip()
+            try:
+                items = self._search_web(search_query)
+                if not items:
+                    return ToolActionResult(
+                        action="web_search",
+                        handled=True,
+                        response="I could not find web results for that query right now.",
+                        payload={"results": []},
+                    )
+
+                lines = ["Here are quick web search results:"]
+                for idx, item in enumerate(items, 1):
+                    lines.append(f"{idx}. {item['title']}: {item['snippet']}")
+                return ToolActionResult(
+                    action="web_search",
+                    handled=True,
+                    response="\n".join(lines),
+                    payload={"results": items},
+                )
+            except Exception as exc:
+                return ToolActionResult(
+                    action="web_search",
+                    handled=True,
+                    response=f"Web search is temporarily unavailable: {exc}",
+                    payload={"results": []},
+                )
+
+        calendar_triggers = ["/calendar", "create event", "add reminder", "schedule"]
+        if any(trigger in lowered for trigger in calendar_triggers):
+            event = self._create_calendar_event(query)
+            return ToolActionResult(
+                action="calendar",
+                handled=True,
+                response=(
+                    "I prepared a calendar event draft. "
+                    "Use the download button to add it to your calendar."
+                ),
+                payload=event,
+            )
+
+        email_triggers = ["/email", "draft email", "write email", "send email"]
+        if any(trigger in lowered for trigger in email_triggers):
+            draft = self._create_email_draft(query)
+            return ToolActionResult(
+                action="email",
+                handled=True,
+                response="I prepared an email draft. You can review and send it manually.",
+                payload=draft,
+            )
+
+        return ToolActionResult(action="none", handled=False)
+
+    def transcribe_audio(self, audio_bytes: bytes, language: str = "en") -> str:
+        """Transcribe voice input with Groq Whisper API."""
+        if not audio_bytes:
+            return ""
+        if self.groq_client is None:
+            return ""
+
+        audio_file = BytesIO(audio_bytes)
+        audio_file.name = "voice_input.wav"
+
+        try:
+            transcript = self.groq_client.audio.transcriptions.create(
+                file=audio_file,
+                model="whisper-large-v3",
+                language=language,
+                response_format="verbose_json",
+            )
+            return str(getattr(transcript, "text", "") or "").strip()
+        except Exception as exc:
+            print(f"Audio transcription failed: {exc}")
+            return ""
 
     def _summarize_docs_without_llm(self, retrieved_docs: List[RetrievedDocument]) -> str:
         """Create a direct response from retrieved docs when LLM is unavailable."""
