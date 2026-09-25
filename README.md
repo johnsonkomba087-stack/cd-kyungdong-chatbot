@@ -2,6 +2,12 @@
 
 A Streamlit chatbot for Kyungdong University Global Campus that answers questions using the university's official website content, then adds voice input, text-to-speech, tool actions, safety controls, admin feedback reporting, and user profile memory.
 
+[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-App-red.svg)](https://streamlit.io/)
+[![Groq](https://img.shields.io/badge/Groq-LLM-black.svg)](https://groq.com/)
+[![Render](https://img.shields.io/badge/Render-Deploy-46E3B7.svg)](https://render.com/)
+[![License](https://img.shields.io/badge/License-Unlicensed-lightgrey.svg)]()
+
 ## What it does
 
 - Answers admissions, program, scholarship, tuition, housing, and student service questions.
@@ -54,6 +60,34 @@ A Streamlit chatbot for Kyungdong University Global Campus that answers question
 - Analytics dashboard for unknown rate, moderation rate, topics, and tool usage
 - Admin login protected by password
 - Exportable developer feedback report
+
+## Screenshots
+
+Add real screenshots here to make the GitHub page more convincing and easier to scan.
+
+Recommended screenshots:
+
+- Main chat interface
+- Sidebar profile settings
+- Voice input and text-to-speech controls
+- Analytics dashboard
+- Admin feedback report download
+
+Suggested file names:
+
+- `docs/screenshots/home.png`
+- `docs/screenshots/voice-settings.png`
+- `docs/screenshots/analytics.png`
+- `docs/screenshots/admin-report.png`
+
+Example markdown once the images are added:
+
+```md
+![Main chat interface](docs/screenshots/home.png)
+![Voice settings](docs/screenshots/voice-settings.png)
+![Analytics dashboard](docs/screenshots/analytics.png)
+![Admin report](docs/screenshots/admin-report.png)
+```
 
 ## Project structure
 
