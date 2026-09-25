@@ -1,6 +1,19 @@
 # Kyungdong University Global Campus Chatbot
 
-A Streamlit chatbot for Kyungdong University Global Campus that answers questions using the university's official website content, then adds voice input, text-to-speech, tool actions, safety controls, admin feedback reporting, and user profile memory.
+A Streamlit-based AI assistant for Kyungdong University Global Campus. It helps students, applicants, and staff get fast answers from the university's official website, while also supporting voice input, text-to-speech, tool actions, safety controls, admin feedback reporting, and long-term user preferences.
+
+## Project description
+
+This project is designed to make official Kyungdong University information easier to access in one place. Instead of manually searching across multiple pages, users can ask questions in natural language and receive direct answers backed by the university's official website content.
+
+The chatbot is especially useful for:
+
+- New international students who need admissions or visa-related guidance
+- Current students looking for campus life, housing, or student service information
+- Applicants comparing programs, scholarships, and tuition details
+- Developers or administrators who want analytics, feedback, and quality review tools
+
+The app is built with Streamlit for the interface and Groq for language generation, and it pulls content directly from the official KDU Global website so answers stay grounded in the university's own information.
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-App-red.svg)](https://streamlit.io/)
