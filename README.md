@@ -2,6 +2,12 @@
 
 A Streamlit-based AI assistant for Kyungdong University Global Campus. It helps students, applicants, and staff get fast answers from the university's official website, while also supporting voice input, text-to-speech, tool actions, safety controls, admin feedback reporting, and long-term user preferences.
 
+## About this project
+
+This project turns the official Kyungdong University Global website into a conversational assistant. Users can ask natural-language questions about admissions, scholarships, programs, housing, and student services, and the app returns answers grounded in the university's own published information.
+
+It is designed to be practical for students and maintainable for developers: the UI is simple, the knowledge source is official, and the app includes analytics, feedback capture, admin access, and deployment support.
+
 ## Project description
 
 This project is designed to make official Kyungdong University information easier to access in one place. Instead of manually searching across multiple pages, users can ask questions in natural language and receive direct answers backed by the university's official website content.
