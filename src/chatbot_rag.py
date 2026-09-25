@@ -86,6 +86,11 @@ Always maintain a professional and welcoming tone."""
             "Please check the official Kyungdong Global pages in the source links, "
             "or contact info@kduniv.ac.kr for confirmation."
         )
+        self.low_confidence_response_ko = (
+            "현재 로드된 공식 데이터 기준으로는 알 수 없습니다. "
+            "출처 링크의 경동대학교 글로벌 공식 페이지를 확인하시거나 "
+            "info@kduniv.ac.kr로 문의해 주세요."
+        )
 
         self.stopwords = {
             "what", "when", "where", "which", "who", "why", "how", "the", "and", "for", "with",
@@ -516,12 +521,25 @@ Always maintain a professional and welcoming tone."""
         detail_level = style_options.get("detail_level", "Balanced")
         response_language = style_options.get("response_language", "English")
 
-        return (
+        base_instruction = (
             f"Response style: tone={tone}, detail={detail_level}, language={response_language}. "
             "Sound natural and conversational, but stay factual. "
             "When confident, answer directly in the first sentence. "
             "When uncertain, explicitly say you don't know based on official data."
         )
+
+        if str(response_language).lower().startswith("korean"):
+            return (
+                base_instruction
+                + " Respond fully in Korean, using natural Korean phrasing. "
+                + "Keep official names and email addresses exactly as in the source when needed."
+            )
+        return base_instruction
+
+    def _get_low_confidence_response(self, response_language: str) -> str:
+        if str(response_language).lower().startswith("korean"):
+            return self.low_confidence_response_ko
+        return self.low_confidence_response
 
     def generate_follow_up_suggestions(
         self,
@@ -626,11 +644,15 @@ Always maintain a professional and welcoming tone."""
     ) -> Tuple[str, List[RetrievedDocument]]:
         """Generate response using Groq with retrieved context."""
         confidence = self._assess_confidence(retrieved_docs)
+        response_language = (style_options or {}).get("response_language", "English")
 
         if confidence == "low":
-            assistant_response = self.low_confidence_response
+            assistant_response = self._get_low_confidence_response(response_language)
             if retrieved_docs:
-                assistant_response += " I found related snippets, but they are not reliable enough to answer confidently."
+                if str(response_language).lower().startswith("korean"):
+                    assistant_response += " 관련 문서는 일부 찾았지만, 신뢰도 부족으로 확답하기 어렵습니다."
+                else:
+                    assistant_response += " I found related snippets, but they are not reliable enough to answer confidently."
 
             self.conversation_history.append({"role": "user", "content": query})
             self.conversation_history.append({"role": "assistant", "content": assistant_response})
@@ -674,7 +696,7 @@ Always maintain a professional and welcoming tone."""
                 if retrieved_docs:
                     assistant_response = self._summarize_docs_without_llm(retrieved_docs)
                 else:
-                    assistant_response = self.low_confidence_response
+                    assistant_response = self._get_low_confidence_response(response_language)
 
         self.conversation_history.append({"role": "user", "content": query})
         self.conversation_history.append({"role": "assistant", "content": assistant_response})

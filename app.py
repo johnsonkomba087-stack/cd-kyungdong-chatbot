@@ -5,6 +5,7 @@ Streamlit web interface for Kyungdong University RAG Chatbot
 import os
 import sys
 import json
+import re
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -105,7 +106,7 @@ def record_analytics_event(event: dict) -> str:
     return event_id
 
 
-def record_feedback(event_id: str, vote: str) -> None:
+def record_feedback(event_id: str, vote: str, reason: str = "", note: str = "") -> None:
     payload = _read_json(ANALYTICS_FILE, {"events": [], "feedback": {"up": 0, "down": 0}})
     feedback = payload.setdefault("feedback", {"up": 0, "down": 0})
 
@@ -117,6 +118,10 @@ def record_feedback(event_id: str, vote: str) -> None:
     for event in payload.get("events", []):
         if event.get("event_id") == event_id:
             event["feedback"] = vote
+            if reason:
+                event["feedback_reason"] = reason
+            if note:
+                event["feedback_note"] = note
             break
 
     _write_json(ANALYTICS_FILE, payload)
@@ -131,6 +136,11 @@ def get_analytics_snapshot() -> dict:
     avg_docs = (sum(int(e.get("retrieved_count", 0)) for e in events) / total) if total else 0.0
     topics = Counter(e.get("topic", "general") for e in events)
     tools = Counter(e.get("tool_action", "none") for e in events if e.get("tool_action") and e.get("tool_action") != "none")
+    feedback_reasons = Counter(
+        e.get("feedback_reason", "")
+        for e in events
+        if e.get("feedback") == "down" and e.get("feedback_reason")
+    )
     feedback = payload.get("feedback", {"up": 0, "down": 0})
     up = int(feedback.get("up", 0))
     down = int(feedback.get("down", 0))
@@ -146,6 +156,37 @@ def get_analytics_snapshot() -> dict:
         "feedback_up": up,
         "feedback_down": down,
         "quality_score": quality,
+        "top_feedback_reasons": feedback_reasons.most_common(5),
+    }
+
+
+def build_developer_feedback_report() -> dict:
+    """Build a compact developer-facing report payload."""
+    payload = _read_json(ANALYTICS_FILE, {"events": [], "feedback": {"up": 0, "down": 0}})
+    snapshot = get_analytics_snapshot()
+
+    examples = []
+    for event in payload.get("events", []):
+        if event.get("feedback") == "down" or event.get("moderated") or event.get("unknown"):
+            examples.append(
+                {
+                    "event_id": event.get("event_id", ""),
+                    "timestamp": event.get("timestamp", ""),
+                    "query": event.get("query", ""),
+                    "topic": event.get("topic", ""),
+                    "feedback": event.get("feedback", ""),
+                    "feedback_reason": event.get("feedback_reason", ""),
+                    "feedback_note": event.get("feedback_note", ""),
+                    "unknown": bool(event.get("unknown")),
+                    "moderated": bool(event.get("moderated")),
+                    "tool_action": event.get("tool_action", "none"),
+                }
+            )
+
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "metrics": snapshot,
+        "sampled_events": examples[-100:],
     }
 
 
@@ -172,6 +213,31 @@ def _safe_index(options: list[str], selected: str, default: int = 0) -> int:
         return options.index(selected)
     except ValueError:
         return default
+
+
+def detect_input_language(text: str) -> str:
+    """Detect basic input language between Korean and English."""
+    if re.search(r"[\uac00-\ud7a3]", text or ""):
+        return "Korean"
+    return "English"
+
+
+def resolve_response_language(user_input: str, preferred: str) -> str:
+    if preferred == "Auto":
+        return detect_input_language(user_input)
+    return preferred
+
+
+def load_admin_password() -> str:
+    """Load admin password from secrets or environment."""
+    try:
+        secret_value = str(st.secrets.get("ADMIN_PASSWORD", "")).strip()
+        if secret_value:
+            return secret_value
+    except Exception:
+        pass
+
+    return str(os.getenv("ADMIN_PASSWORD", "")).strip()
 
 
 def _is_placeholder(value: str) -> bool:
@@ -506,6 +572,43 @@ def main():
             else:
                 st.write("- No tool calls yet")
 
+            st.markdown("**Top Negative Feedback Reasons**")
+            if snapshot.get("top_feedback_reasons"):
+                for reason, count in snapshot["top_feedback_reasons"]:
+                    st.write(f"- {reason}: {count}")
+            else:
+                st.write("- No negative feedback reasons yet")
+
+        with st.expander("🛡️ Admin Profile", expanded=False):
+            admin_password = load_admin_password()
+            if not admin_password:
+                st.warning("Set ADMIN_PASSWORD in environment or secrets to enable admin login.")
+            else:
+                admin_user = st.text_input("Admin Username", value="admin", key="admin_user_input")
+                admin_pass_input = st.text_input("Admin Password", type="password", key="admin_password_input")
+
+                if st.button("Login as Admin", use_container_width=True):
+                    is_valid = admin_user.strip().lower() == "admin" and admin_pass_input == admin_password
+                    st.session_state.admin_authenticated = bool(is_valid)
+                    if is_valid:
+                        st.success("Admin login successful")
+                    else:
+                        st.error("Invalid admin credentials")
+
+                if st.session_state.get("admin_authenticated", False):
+                    st.success("Admin mode enabled")
+                    report = build_developer_feedback_report()
+                    st.download_button(
+                        "Download Developer Feedback Report",
+                        data=json.dumps(report, ensure_ascii=False, indent=2),
+                        file_name="developer_feedback_report.json",
+                        mime="application/json",
+                        use_container_width=True,
+                    )
+                    if st.button("Logout Admin", use_container_width=True):
+                        st.session_state.admin_authenticated = False
+                        st.info("Admin logged out")
+
         st.markdown("---")
         
         st.markdown("### 🎯 Quick Topics")
@@ -659,8 +762,31 @@ def main():
                         st.success("Thanks for the feedback")
                 with col2:
                     if st.button("👎 Needs improvement", key=f"feedback_down_{msg_index}") and event_id:
-                        record_feedback(event_id, "down")
-                        st.info("Feedback recorded")
+                        st.session_state.feedback_target_event_id = event_id
+                        st.info("Please select a reason below")
+
+                if event_id and st.session_state.get("feedback_target_event_id") == event_id:
+                    reason = st.selectbox(
+                        "What was wrong?",
+                        [
+                            "Wrong fact",
+                            "Not clear",
+                            "Too long or too short",
+                            "Unsafe response",
+                            "Missing tool action",
+                            "Other",
+                        ],
+                        key=f"feedback_reason_{msg_index}",
+                    )
+                    note = st.text_area(
+                        "Optional note",
+                        key=f"feedback_note_{msg_index}",
+                        height=70,
+                    )
+                    if st.button("Submit feedback details", key=f"feedback_submit_{msg_index}"):
+                        record_feedback(event_id, "down", reason=reason, note=note.strip())
+                        st.session_state.feedback_target_event_id = ""
+                        st.success("Detailed feedback recorded")
     
     # Handle suggested question, voice input, or chat input
     user_input = None
@@ -683,7 +809,9 @@ def main():
                     signature = f"{len(audio_bytes)}-{hash(audio_bytes[:64])}"
                     if signature != st.session_state.get("last_voice_signature"):
                         st.session_state.last_voice_signature = signature
-                        transcribed = chatbot.transcribe_audio(audio_bytes, language="en")
+                        selected_language = st.session_state.get("response_language", "English")
+                        input_lang = "ko" if selected_language == "Korean" else "en"
+                        transcribed = chatbot.transcribe_audio(audio_bytes, language=input_lang)
                         if transcribed:
                             user_input = transcribed
                             st.info(f"Transcribed: {transcribed}")
@@ -725,6 +853,11 @@ def main():
             if not moderation.allowed:
                 moderated = True
                 response = moderation.reason
+                if detect_input_language(user_input) == "Korean":
+                    response = (
+                        "안전 정책에 따라 해당 요청은 처리할 수 없습니다. "
+                        "경동대학교 글로벌 캠퍼스 관련 질문으로 다시 요청해 주세요."
+                    )
                 st.warning("Request blocked by safety layer")
             else:
                 tool_result = None
@@ -745,10 +878,14 @@ def main():
                         st.warning("⚠️ No relevant documents found - generating general response")
 
                     with st.spinner("💭 Generating response..."):
+                        resolved_language = resolve_response_language(
+                            user_input,
+                            st.session_state.get("response_language", "English"),
+                        )
                         style_options = {
                             "tone": st.session_state.get("response_tone", "Friendly"),
                             "detail_level": st.session_state.get("response_detail", "Balanced"),
-                            "response_language": st.session_state.get("response_language", "English"),
+                            "response_language": resolved_language,
                         }
                         response, docs_used = chatbot.generate_response(
                             user_input,
@@ -769,9 +906,13 @@ def main():
                 display_sources(retrieved_docs)
 
             if st.session_state.get("tts_enabled", False):
+                output_language = resolve_response_language(
+                    user_input,
+                    st.session_state.get("response_language", "English"),
+                )
                 tts_audio = synthesize_tts_audio(
                     response,
-                    st.session_state.get("response_language", "English"),
+                    output_language,
                 )
                 if tts_audio:
                     st.audio(tts_audio, format="audio/mp3")
@@ -782,6 +923,10 @@ def main():
                     "profile": st.session_state.get("profile_name", "guest"),
                     "query": user_input,
                     "topic": topic,
+                    "response_language": resolve_response_language(
+                        user_input,
+                        st.session_state.get("response_language", "English"),
+                    ),
                     "retrieved_count": len(retrieved_docs),
                     "unknown": unknown,
                     "moderated": moderated,
