@@ -53,7 +53,33 @@ Provide accurate, friendly, and detailed information about:
 
 Base your answers on the retrieved official university website content when it is available.
 If you do not have enough official information, say that clearly and suggest contacting the university directly.
+Answer style requirements:
+1) Start with a direct answer in one sentence.
+2) Then provide short supporting details.
+3) Do not invent facts, figures, deadlines, or policies not present in the provided context.
+4) If uncertain, explicitly say "I don't know based on official data currently loaded."
 Always maintain a professional and welcoming tone."""
+
+        self.low_confidence_response = (
+            "I don't know based on official data currently loaded. "
+            "Please check the official Kyungdong Global pages in the source links, "
+            "or contact info@kduniv.ac.kr for confirmation."
+        )
+
+        self.stopwords = {
+            "what", "when", "where", "which", "who", "why", "how", "the", "and", "for", "with",
+            "about", "into", "from", "your", "you", "are", "can", "does", "this", "that", "have",
+            "has", "was", "were", "will", "would", "could", "should", "their", "there", "tell",
+            "me", "please", "is", "to", "of", "in", "on", "at", "by", "it", "or"
+        }
+
+        self.domain_keywords = {
+            "kdu", "kyungdong", "university", "campus", "admission", "admissions", "apply", "application",
+            "deadline", "requirements", "documents", "undergraduate", "graduate", "master", "phd", "program",
+            "programs", "major", "majors", "degree", "academics", "scholarship", "scholarships", "tuition",
+            "fees", "cost", "housing", "dorm", "dormitory", "facilities", "student", "services", "career",
+            "counselling", "counseling", "parttime", "visa", "international", "goseong", "gangwon"
+        }
 
     def ensure_collection_exists(self):
         """Compatibility method for the UI; returns current document count."""
@@ -73,13 +99,17 @@ Always maintain a professional and welcoming tone."""
         self,
         query: str,
         top_k: int = 3,
-        score_threshold: float = 0.15
+        score_threshold: float = 0.2
     ) -> List[RetrievedDocument]:
         """Retrieve relevant documents using lightweight lexical matching."""
         if not self.documents_cache:
             return []
 
         query_terms = self._tokenize(query)
+        if not self._is_domain_query(query_terms):
+            return []
+
+        intent_category = self._infer_intent_category(query_terms)
         query_counts = Counter(query_terms)
         scored_documents = []
 
@@ -92,6 +122,7 @@ Always maintain a professional and welcoming tone."""
             content_counts = Counter(content_terms)
             overlap = sum(min(query_counts[token], content_counts[token]) for token in query_counts)
             normalized_overlap = overlap / max(len(query_terms), 1)
+            unique_overlap = sum(1 for token in query_counts if token in content_counts)
 
             phrase_bonus = 0.0
             lowered_content = content.lower()
@@ -104,7 +135,20 @@ Always maintain a professional and welcoming tone."""
             if category and any(term in category for term in query_terms):
                 category_bonus = 0.1
 
-            score = min(normalized_overlap + phrase_bonus + category_bonus, 1.0)
+            intent_bonus = 0.0
+            doc_category = document.get("category", "")
+            if intent_category:
+                if doc_category == intent_category:
+                    intent_bonus = 0.25
+                else:
+                    intent_bonus = -0.08
+
+            if unique_overlap == 0:
+                continue
+            if unique_overlap == 1 and normalized_overlap < 0.25 and intent_bonus <= 0:
+                continue
+
+            score = min(max(normalized_overlap + phrase_bonus + category_bonus + intent_bonus, 0.0), 1.0)
             if score >= score_threshold:
                 scored_documents.append((score, document))
 
@@ -124,8 +168,68 @@ Always maintain a professional and welcoming tone."""
 
         return results
 
+    def _assess_confidence(self, retrieved_docs: List[RetrievedDocument]) -> str:
+        """Classify retrieval confidence to control answer strictness."""
+        if not retrieved_docs:
+            return "low"
+
+        top_score = retrieved_docs[0].relevance_score
+        avg_score = sum(doc.relevance_score for doc in retrieved_docs) / len(retrieved_docs)
+
+        if top_score >= 0.65 and avg_score >= 0.45:
+            return "high"
+        if top_score >= 0.4:
+            return "medium"
+        return "low"
+
     def _tokenize(self, text: str) -> List[str]:
-        return re.findall(r"[a-zA-Z0-9]{2,}", text.lower())
+        terms = re.findall(r"[a-zA-Z0-9]{2,}", text.lower())
+        return [term for term in terms if term not in self.stopwords]
+
+    def _infer_intent_category(self, query_terms: List[str]) -> str:
+        """Infer likely knowledge category from query tokens."""
+        if not query_terms:
+            return ""
+
+        category_keywords = {
+            "admissions": {"admission", "admissions", "apply", "application", "deadline", "requirements", "transfer", "documents"},
+            "academics": {"program", "programs", "major", "majors", "academic", "degree", "curriculum", "undergraduate", "graduate", "phd", "master"},
+            "fees": {"fee", "fees", "tuition", "cost", "costs", "payment", "scholarship", "scholarships", "financial", "aid"},
+            "campus_life": {"campus", "housing", "dorm", "dormitory", "facility", "facilities", "clubs", "events", "studentlife"},
+            "student_services": {"service", "services", "support", "career", "counselling", "counseling", "human", "rights", "parttime", "job"},
+            "overview": {"about", "global", "why", "kdu", "university", "location", "address"},
+        }
+
+        scores = {category: 0 for category in category_keywords}
+        for term in query_terms:
+            for category, keywords in category_keywords.items():
+                if term in keywords:
+                    scores[category] += 1
+
+        best_category = max(scores, key=scores.get)
+        return best_category if scores[best_category] > 0 else ""
+
+    def _is_domain_query(self, query_terms: List[str]) -> bool:
+        """Return True when query appears related to university/helpdesk domain."""
+        if not query_terms:
+            return False
+        return any(term in self.domain_keywords for term in query_terms)
+
+    def _summarize_docs_without_llm(self, retrieved_docs: List[RetrievedDocument]) -> str:
+        """Create a direct response from retrieved docs when LLM is unavailable."""
+        if not retrieved_docs:
+            return self.low_confidence_response
+
+        highlights = []
+        for doc in retrieved_docs[:2]:
+            first_sentence = re.split(r"(?<=[.!?])\s+", doc.content.strip())[0]
+            highlights.append(f"- {first_sentence}")
+
+        return (
+            "Direct answer based on official website data:\n\n"
+            + "\n".join(highlights)
+            + "\n\nFor exact wording or latest updates, please verify the linked official sources."
+        )
 
     def _generate_with_model(self, messages, model_name):
         """Call Groq with a specific model, with fallback on errors."""
@@ -150,6 +254,17 @@ Always maintain a professional and welcoming tone."""
         retrieved_docs: List[RetrievedDocument]
     ) -> Tuple[str, List[RetrievedDocument]]:
         """Generate response using Groq with retrieved context."""
+        confidence = self._assess_confidence(retrieved_docs)
+
+        if confidence == "low":
+            assistant_response = self.low_confidence_response
+            if retrieved_docs:
+                assistant_response += " I found related snippets, but they are not reliable enough to answer confidently."
+
+            self.conversation_history.append({"role": "user", "content": query})
+            self.conversation_history.append({"role": "assistant", "content": assistant_response})
+            return assistant_response, retrieved_docs
+
         if retrieved_docs:
             context = "Based on the following information from the official Kyungdong University Global website:\n\n"
             for doc in retrieved_docs:
@@ -161,9 +276,16 @@ Always maintain a professional and welcoming tone."""
         messages = [{"role": "system", "content": self.system_prompt}]
         for msg in self.conversation_history[-6:]:
             messages.append(msg)
+
+        confidence_instruction = (
+            "Confidence: HIGH. Provide a direct answer first, then concise details based only on context."
+            if confidence == "high"
+            else "Confidence: MEDIUM. Be cautious, mention uncertainty where needed, and do not over-claim."
+        )
+
         messages.append({
             "role": "user",
-            "content": f"{context}User question: {query}"
+            "content": f"{context}{confidence_instruction}\nUser question: {query}"
         })
 
         try:
@@ -177,12 +299,9 @@ Always maintain a professional and welcoming tone."""
             except Exception as second_error:
                 print(f"[Groq] Both models failed: {first_error} | {second_error}")
                 if retrieved_docs:
-                    assistant_response = "I found the following information on the official university website:\n\n"
-                    for doc in retrieved_docs:
-                        assistant_response += f"• {doc.content}\n\n"
-                    assistant_response += "Please verify important details on the linked official source pages."
+                    assistant_response = self._summarize_docs_without_llm(retrieved_docs)
                 else:
-                    assistant_response = "I apologize, but I'm currently unable to connect to the AI service and I could not find matching official website content for that question."
+                    assistant_response = self.low_confidence_response
 
         self.conversation_history.append({"role": "user", "content": query})
         self.conversation_history.append({"role": "assistant", "content": assistant_response})
