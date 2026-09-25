@@ -215,6 +215,35 @@ def _safe_index(options: list[str], selected: str, default: int = 0) -> int:
         return default
 
 
+def _extract_audio_bytes(audio_data) -> bytes:
+    """Normalize recorder output into raw audio bytes."""
+    if not audio_data:
+        return b""
+
+    if isinstance(audio_data, (bytes, bytearray, memoryview)):
+        return bytes(audio_data)
+
+    if isinstance(audio_data, dict):
+        for key in ("bytes", "audio", "blob", "file", "data"):
+            value = audio_data.get(key)
+            if isinstance(value, (bytes, bytearray, memoryview)):
+                return bytes(value)
+            if hasattr(value, "read"):
+                try:
+                    return value.read()
+                except Exception:
+                    pass
+        return b""
+
+    if hasattr(audio_data, "read"):
+        try:
+            return audio_data.read()
+        except Exception:
+            return b""
+
+    return b""
+
+
 def detect_input_language(text: str) -> str:
     """Detect basic input language between Korean and English."""
     if re.search(r"[\uac00-\ud7a3]", text or ""):
@@ -799,22 +828,29 @@ def main():
                 st.caption("Voice input dependency missing: install streamlit-mic-recorder")
             else:
                 st.markdown("### 🎙️ Voice Input")
+                st.caption("Tip: speak clearly, pause before and after speaking, and press Stop before sending.")
                 audio_data = mic_recorder(
                     start_prompt="Start recording",
                     stop_prompt="Stop recording",
                     key="voice_recorder",
+                    just_once=False,
                 )
-                if audio_data and audio_data.get("bytes"):
-                    audio_bytes = audio_data.get("bytes", b"")
+                voice_output = st.session_state.get("voice_recorder_output") or audio_data
+                audio_bytes = _extract_audio_bytes(voice_output)
+                if audio_bytes:
                     signature = f"{len(audio_bytes)}-{hash(audio_bytes[:64])}"
                     if signature != st.session_state.get("last_voice_signature"):
                         st.session_state.last_voice_signature = signature
                         selected_language = st.session_state.get("response_language", "English")
-                        input_lang = "ko" if selected_language == "Korean" else "en"
+                        input_lang = "ko" if selected_language == "Korean" else None
                         transcribed = chatbot.transcribe_audio(audio_bytes, language=input_lang)
                         if transcribed:
                             user_input = transcribed
                             st.info(f"Transcribed: {transcribed}")
+                        else:
+                            st.warning("Voice was captured but transcription was empty. Try speaking a little louder or using English/Korean explicitly.")
+                elif audio_data:
+                    st.info("Recorder is ready. Click Stop after speaking to send audio for transcription.")
 
         if not user_input:
             user_input = st.chat_input(

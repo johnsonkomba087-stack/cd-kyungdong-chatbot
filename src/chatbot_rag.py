@@ -457,7 +457,7 @@ Always maintain a professional and welcoming tone."""
 
         return ToolActionResult(action="none", handled=False)
 
-    def transcribe_audio(self, audio_bytes: bytes, language: str = "en") -> str:
+    def transcribe_audio(self, audio_bytes: bytes, language: str | None = None) -> str:
         """Transcribe voice input with Groq Whisper API."""
         if not audio_bytes:
             return ""
@@ -468,12 +468,15 @@ Always maintain a professional and welcoming tone."""
         audio_file.name = "voice_input.wav"
 
         try:
-            transcript = self.groq_client.audio.transcriptions.create(
-                file=audio_file,
-                model="whisper-large-v3",
-                language=language,
-                response_format="verbose_json",
-            )
+            transcription_kwargs = {
+                "file": audio_file,
+                "model": "whisper-large-v3",
+                "response_format": "verbose_json",
+            }
+            if language:
+                transcription_kwargs["language"] = language
+
+            transcript = self.groq_client.audio.transcriptions.create(**transcription_kwargs)
             return str(getattr(transcript, "text", "") or "").strip()
         except Exception as exc:
             print(f"Audio transcription failed: {exc}")
