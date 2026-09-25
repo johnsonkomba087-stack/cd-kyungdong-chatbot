@@ -1,0 +1,90 @@
+================================================================================
+COMPREHENSIVE DATA RETRIEVAL TEST
+================================================================================
+
+✓ API key loaded: [REDACTED]
+
+[TEST 1] Loading knowledge base...
+✓ Loaded 12 documents
+
+[TEST 2] Initializing chatbot with embedding model...
+✓ Chatbot initialized successfully
+
+[TEST 3] Adding documents to vector database...
+✓ Documents added. Collection count: 12
+
+[TEST 4] Testing document retrieval...
+
+  Query: 'admission requirements international students'
+  Retrieved: 2 documents
+    [1] Admissions Office (score: 59.4%)
+        Kyungdong University Global Campus offers diverse undergraduate programs in Engi...
+    [2] Financial Aid Office (score: 57.4%)
+        Need-based financial aid is available to demonstrated need students. Internation...
+
+  Query: 'tuition fees cost'
+  Retrieved: 2 documents
+    [1] Office of the Registrar (score: 59.9%)
+        Undergraduate tuition for 2024-2025 academic year: International students pay ap...
+    [2] Office of the Registrar (score: 55.3%)
+        Additional costs include: dormitory fees ($4,000-6,000/year), meal plan ($3,000-...
+
+  Query: 'scholarships financial aid'
+  Retrieved: 2 documents
+    [1] Financial Aid Office (score: 62.3%)
+        Need-based financial aid is available to demonstrated need students. Internation...
+    [2] Financial Aid Office (score: 57.7%)
+        Merit-based scholarships are available for high-achieving students. Presidential...
+
+✓ SUCCESS: Retrieved documents from all test queries!
+
+[TEST 5] Testing chat with Groq API...
+  Query: 'Tell me about admissions'
+  ✗ ERROR: Groq model call failed for both models: Error code: 400 - {'error': {'message': 'The model `gemma2-9b-it` has been decommissioned and is no longer supported. Please refer to https://console.groq.com/docs/deprecations for a recommendation on which model to use instead.', 'type': 'invalid_request_error', 'code': 'model_decommissioned'}} | Error code: 400 - {'error': {'message': 'The model `gemma-7b-it` has been decommissioned and is no longer supported. Please refer to https://console.groq.com/docs/deprecations for a recommendation on which model to use instead.', 'type': 'invalid_request_error', 'code': 'model_decommissioned'}}
+Traceback (most recent call last):
+  File "D:\KDU GLOBAL CHATBOT\app.py\src\chatbot_rag.py", line 207, in generate_response
+    response = self._generate_with_model(messages, self.fallback_llm_model)
+  File "D:\KDU GLOBAL CHATBOT\app.py\src\chatbot_rag.py", line 170, in _generate_with_model
+    return self.groq_client.chat.completions.create(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        model=model_name,
+        ^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+        top_p=0.9,
+        ^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\PC\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\groq\resources\chat\completions.py", line 466, in create
+    return self._post(
+           ~~~~~~~~~~^
+        "/openai/v1/chat/completions",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<45 lines>...
+        stream_cls=Stream[ChatCompletionChunk],
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\PC\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\groq\_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\PC\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\groq\_base_client.py", line 1071, in request
+    raise self._make_status_error_from_response(err.response) from None
+groq.BadRequestError: Error code: 400 - {'error': {'message': 'The model `gemma-7b-it` has been decommissioned and is no longer supported. Please refer to https://console.groq.com/docs/deprecations for a recommendation on which model to use instead.', 'type': 'invalid_request_error', 'code': 'model_decommissioned'}}
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "D:\KDU GLOBAL CHATBOT\app.py\comprehensive_test.py", line 119, in <module>
+    response, docs_used = bot.chat(query)
+                          ~~~~~~~~^^^^^^^
+  File "D:\KDU GLOBAL CHATBOT\app.py\src\chatbot_rag.py", line 223, in chat
+    response, docs = self.generate_response(user_query, retrieved_docs)
+                     ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\KDU GLOBAL CHATBOT\app.py\src\chatbot_rag.py", line 209, in generate_response
+    raise RuntimeError(f"Groq model call failed for both models: {first_error} | {second_error}") from second_error
+RuntimeError: Groq model call failed for both models: Error code: 400 - {'error': {'message': 'The model `gemma2-9b-it` has been decommissioned and is no longer supported. Please refer to https://console.groq.com/docs/deprecations for a recommendation on which model to use instead.', 'type': 'invalid_request_error', 'code': 'model_decommissioned'}} | Error code: 400 - {'error': {'message': 'The model `gemma-7b-it` has been decommissioned and is no longer supported. Please refer to https://console.groq.com/docs/deprecations for a recommendation on which model to use instead.', 'type': 'invalid_request_error', 'code': 'model_decommissioned'}}
+
+
+================================================================================
+TEST COMPLETE - See results above
+================================================================================
