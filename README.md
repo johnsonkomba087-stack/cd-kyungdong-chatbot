@@ -83,6 +83,12 @@ Optional environment variable:
 
 - `ADMIN_PASSWORD`
 
+Admin profile activation:
+
+1. Set `ADMIN_PASSWORD` in your local environment, `.streamlit/secrets.toml`, or Render environment variables.
+2. Open the app sidebar and expand the Admin Profile panel.
+3. Sign in with username `admin` and the password you configured.
+
 Example `.streamlit/secrets.toml`:
 
 ```toml

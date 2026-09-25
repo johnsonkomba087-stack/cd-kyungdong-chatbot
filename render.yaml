@@ -9,5 +9,7 @@ services:
     envVars:
       - key: GROQ_API_KEY
         sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
       - key: PYTHON_VERSION
         value: 3.12.4
