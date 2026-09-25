@@ -1,36 +1,174 @@
-# 🎓 Kyungdong University RAG Chatbot
+# Kyungdong University Global Campus Chatbot
 
-An intelligent chatbot for Kyungdong University Global Campus using Retrieval-Augmented Generation (RAG).
+A Streamlit chatbot for Kyungdong University Global Campus that answers questions using the university's official website content, then adds voice input, text-to-speech, tool actions, safety controls, admin feedback reporting, and user profile memory.
 
-## 🌟 Features
+## What it does
 
-- **Multi-turn Conversations** - Context-aware responses across multiple exchanges
-- **RAG Pipeline** - Retrieves relevant documents before generating responses
-- **Live Official Data** - Pulls content from the official KDU Global website and can refresh on demand
-- **Source Attribution** - Shows which documents were used with relevance scores
-- **Lightweight Stack** - Groq for chat plus direct website retrieval without a heavy vector database
-- **Beautiful UI** - Streamlit interface with quick topic buttons
-- **Production Ready** - Deployable on cloud platforms
+- Answers admissions, program, scholarship, tuition, housing, and student service questions.
+- Pulls knowledge from official KDU Global website pages.
+- Shows source links and retrieval confidence.
+- Supports voice input and text-to-speech output.
+- Includes safe tool actions for web search, calendar drafts, and email drafts.
+- Stores per-user preferences such as tone, language, and voice settings.
+- Tracks feedback and analytics so developers can review quality over time.
+- Supports Korean and English responses.
 
-## Official Data Mode
+## Key features
 
-The chatbot no longer depends on manually maintained text files for its main knowledge base. It fetches admissions, academics, campus life, and student service content from the official KDU Global website, caches the processed text locally for faster startup, and lets you refresh the website data from the Streamlit sidebar.
+### Official website-backed answers
 
-## Online Deployment
+- Uses official KDU Global pages as the main knowledge source.
+- Caches parsed website content locally for faster startup.
+- Lets you refresh the official data from the sidebar.
 
-This project is ready for cloud deployment.
+### Better chat experience
 
-- Streamlit Community Cloud: use `app.py` as the main file and add `GROQ_API_KEY` in the app Secrets panel.
-- Render: use the included `render.yaml` and set `GROQ_API_KEY` in the Render environment settings.
-- Local secret template: copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` for development.
+- Tone controls: Friendly, Professional, Conversational
+- Detail controls: Concise, Balanced, Detailed
+- Language controls: English, Korean, Auto
+- Follow-up question suggestions
+- Chat export to JSON
 
-## 📋 Prerequisites
+### Voice and audio
 
-- Python 3.9+
-- Groq API Key (free from https://console.groq.com)
+- Microphone recording in the browser
+- Speech-to-text transcription
+- Text-to-speech playback for answers
+- Korean-aware voice handling
 
-## 🚀 Quick Start
+### Tool actions
 
-### 1. Clone/Download Project
+- Web search via `/search ...`
+- Calendar drafts via `/calendar ...`
+- Email drafts via `/email ...`
 
-### 2. Create Virtual Environment
+### Safety and moderation
+
+- Prompt-injection and jailbreak resistance
+- Harmful request blocking
+- Honest unknown responses when the official data does not cover a question
+
+### Developer and admin support
+
+- Detailed feedback capture with reasons and notes
+- Analytics dashboard for unknown rate, moderation rate, topics, and tool usage
+- Admin login protected by password
+- Exportable developer feedback report
+
+## Project structure
+
+```text
+app.py
+src/
+	app.py
+	chatbot_rag.py
+	knowledge_base.py
+render.yaml
+requirements.txt
+```
+
+## Requirements
+
+- Python 3.12 is recommended for local development.
+- A Groq API key is required.
+- Microphone access is required for voice input.
+
+## Installation
+
+1. Clone the repository.
+2. Create and activate a virtual environment.
+3. Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Configuration
+
+### Required environment variables
+
+- `GROQ_API_KEY` - Groq API key used for chat and transcription.
+
+### Optional environment variables
+
+- `ADMIN_PASSWORD` - Enables the admin profile panel.
+
+### Local secrets file
+
+For local development, you can use `.streamlit/secrets.toml`:
+
+```toml
+GROQ_API_KEY = "your_groq_api_key"
+ADMIN_PASSWORD = "your_admin_password"
+```
+
+## Run locally
+
+```bash
+streamlit run app.py
+```
+
+If you use Windows PowerShell:
+
+```powershell
+$env:GROQ_API_KEY = "your_groq_api_key"
+streamlit run app.py
+```
+
+## Deploy on Render
+
+This repository includes `render.yaml` for Render deployment.
+
+Important settings:
+
+- Start command: `streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true`
+- Python version: `3.12.4`
+- Set `GROQ_API_KEY` in the Render environment variables
+
+## How to use
+
+### Ask normal questions
+
+- Tell me about admissions for international students.
+- What scholarships are available?
+- What housing options does KDU Global offer?
+
+### Try voice input
+
+1. Enable Voice Input in the sidebar.
+2. Allow microphone permission in the browser.
+3. Record a question and stop the recording.
+
+### Try tool actions
+
+- `/search Kyungdong University Global admissions`
+- `/calendar remind me to submit documents`
+- `/email draft a question about scholarships`
+
+### Try Korean
+
+- `한국어로 입학 요건을 알려줘`
+- `장학금 정보를 한국어로 설명해줘`
+
+## Feedback workflow
+
+- Use the 👍 / 👎 buttons on assistant responses.
+- If you click 👎, select a reason and add a note.
+- Open the Analytics Dashboard to review totals, unknown rate, moderation rate, and topic trends.
+- Use the Admin Profile panel to download the developer feedback report.
+
+## Notes for administrators
+
+- Admin login uses the username `admin` and the password from `ADMIN_PASSWORD`.
+- If `ADMIN_PASSWORD` is not set, the admin panel stays disabled.
+
+## Troubleshooting
+
+- If the chatbot says the Groq key is missing, set `GROQ_API_KEY` in your environment or secrets file.
+- If voice input does not work, check browser microphone permissions.
+- If Korean audio transcription seems weak, select Korean in the response language control and speak clearly.
+- If official data looks stale, use the sidebar refresh button to reload website content.
+
+## License
+
+No license file is included yet. Add one if you want the project to be public and reusable under explicit terms.
