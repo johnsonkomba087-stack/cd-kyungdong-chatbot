@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 from dataclasses import dataclass
 from html import unescape
 from pathlib import Path
 from typing import Iterable, List
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -17,7 +19,9 @@ from bs4 import BeautifulSoup
 
 CACHE_DIR = Path(__file__).resolve().parents[1] / ".cache"
 CACHE_FILE = CACHE_DIR / "official_knowledge_base.json"
+SOCIAL_CACHE_FILE = CACHE_DIR / "official_social_knowledge_base.json"
 DEFAULT_CACHE_TTL_HOURS = 12
+DEFAULT_SOCIAL_CACHE_TTL_HOURS = 3
 HTTP_TIMEOUT_SECONDS = 20
 USER_AGENT = "Mozilla/5.0 (compatible; KDUChatbot/1.0; +https://global.kduniv.ac.kr/)"
 
@@ -70,6 +74,55 @@ OFFICIAL_SOCIAL_SOURCES = [
     ),
 ]
 
+OPTIONAL_SOCIAL_SOURCES = [
+    ("instagram", "KDU Global Instagram", "KDU_GLOBAL_INSTAGRAM_URL"),
+    ("tiktok", "KDU Global TikTok", "KDU_GLOBAL_TIKTOK_URL"),
+    ("kakaotalk", "KDU Global KakaoTalk", "KDU_GLOBAL_KAKAOTALK_URL"),
+    ("facebook", "KDU Global Facebook (Configured)", "KDU_GLOBAL_FACEBOOK_URL"),
+    ("youtube", "KDU Global YouTube (Configured)", "KDU_GLOBAL_YOUTUBE_URL"),
+]
+
+SOCIAL_ALLOWED_DOMAINS = {
+    "facebook": {"facebook.com", "www.facebook.com", "m.facebook.com", "fb.watch"},
+    "instagram": {"instagram.com", "www.instagram.com"},
+    "tiktok": {"tiktok.com", "www.tiktok.com"},
+    "youtube": {"youtube.com", "www.youtube.com", "youtu.be"},
+    "kakaotalk": {"kakao.com", "www.kakao.com", "open.kakao.com"},
+    "kakao": {"kakao.com", "www.kakao.com", "open.kakao.com"},
+}
+
+KDU_GLOBAL_MARKERS = {
+    "kdu",
+    "kyungdong",
+    "kyungdong university",
+    "global campus",
+    "kdu global",
+    "global.kduniv.ac.kr",
+    "goseong",
+    "gangwon",
+}
+
+TARGET_TOPIC_MARKERS = {
+    "tuition",
+    "fee",
+    "fees",
+    "scholarship",
+    "scholarships",
+    "financial aid",
+    "dorm",
+    "dormitory",
+    "housing",
+    "accommodation",
+    "visa",
+    "immigration",
+    "residence",
+    "admission",
+    "admissions",
+    "apply",
+    "application",
+    "documents",
+}
+
 FALLBACK_DOCUMENTS = [
     {
         "id": "fallback_contact_001",
@@ -102,6 +155,116 @@ def _normalize_text(text: str) -> str:
         lines.append(line)
 
     return "\n\n".join(lines)
+
+
+def _normalize_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if not parsed.scheme:
+        return ""
+    return parsed.geturl().rstrip("/")
+
+
+def _is_allowed_social_url(platform: str, url: str) -> bool:
+    normalized = _normalize_url(url)
+    if not normalized:
+        return False
+
+    parsed = urlparse(normalized)
+    hostname = (parsed.hostname or "").lower()
+    allowed_domains = SOCIAL_ALLOWED_DOMAINS.get(platform.lower()) or SOCIAL_ALLOWED_DOMAINS.get(platform.lower().replace("talk", ""))
+    if not allowed_domains:
+        return False
+
+    return hostname in allowed_domains
+
+
+def _get_effective_social_sources() -> List[OfficialSocialSource]:
+    combined = list(OFFICIAL_SOCIAL_SOURCES)
+    for platform, label, env_name in OPTIONAL_SOCIAL_SOURCES:
+        value = os.getenv(env_name, "").strip()
+        if not value:
+            continue
+        if not _is_allowed_social_url(platform, value):
+            continue
+        combined.append(
+            OfficialSocialSource(
+                platform=platform,
+                label=label,
+                url=value,
+                source_page="https://global.kduniv.ac.kr/global/",
+            )
+        )
+
+    deduped: List[OfficialSocialSource] = []
+    seen_urls = set()
+    for source in combined:
+        normalized = _normalize_url(source.url)
+        if not normalized or normalized in seen_urls:
+            continue
+        seen_urls.add(normalized)
+        deduped.append(source)
+    return deduped
+
+
+def _is_kdu_global_relevant_text(text: str) -> bool:
+    lowered = text.lower()
+    marker_hits = sum(1 for marker in KDU_GLOBAL_MARKERS if marker in lowered)
+    return marker_hits >= 2
+
+
+def _is_target_topic_text(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in TARGET_TOPIC_MARKERS)
+
+
+def _infer_social_category(text: str) -> str:
+    lowered = text.lower()
+    if any(token in lowered for token in ["tuition", "fee", "fees", "scholarship", "financial aid"]):
+        return "fees"
+    if any(token in lowered for token in ["dorm", "dormitory", "housing", "accommodation", "facility"]):
+        return "campus_life"
+    if any(token in lowered for token in ["visa", "immigration", "residence", "arc"]):
+        return "student_services"
+    if any(token in lowered for token in ["admission", "admissions", "apply", "application", "documents"]):
+        return "admissions"
+    return "overview"
+
+
+def _build_social_document(source: OfficialSocialSource, content: str, index: int, category: str) -> dict:
+    digest = hashlib.sha1(f"{source.url}:{category}:{index}:{content}".encode("utf-8")).hexdigest()[:16]
+    return {
+        "id": f"social_{source.platform}_{digest}",
+        "content": content,
+        "source": f"{source.label} (Official Social)",
+        "category": category,
+        "url": source.url,
+        "title": source.label,
+    }
+
+
+def _extract_social_snippets(text: str, max_items: int = 8) -> List[str]:
+    snippets: List[str] = []
+    seen = set()
+
+    for paragraph in text.split("\n\n"):
+        clean = paragraph.strip()
+        if len(clean) < 35 or len(clean) > 950:
+            continue
+
+        lowered = clean.lower()
+        if lowered in seen:
+            continue
+        if not _is_kdu_global_relevant_text(clean):
+            continue
+        if not _is_target_topic_text(clean):
+            continue
+
+        seen.add(lowered)
+        snippets.append(clean)
+        if len(snippets) >= max_items:
+            break
+
+    return snippets
 
 
 def _extract_text_from_html(html: str) -> str:
@@ -228,23 +391,64 @@ def _fetch_page_documents(page: OfficialPage) -> List[dict]:
     return _chunk_text(page, text)
 
 
-def _load_cache() -> List[dict]:
-    if not CACHE_FILE.exists():
+def _load_cache(cache_file: Path = CACHE_FILE) -> List[dict]:
+    if not cache_file.exists():
         return []
     try:
-        payload = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        payload = json.loads(cache_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
     return payload.get("documents", [])
 
 
-def _save_cache(documents: Iterable[dict]) -> None:
+def _save_cache(documents: Iterable[dict], cache_file: Path = CACHE_FILE) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
         "fetched_at": int(time.time()),
         "documents": list(documents),
     }
-    CACHE_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    cache_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_social_documents(force_refresh: bool = False, cache_ttl_hours: int = DEFAULT_SOCIAL_CACHE_TTL_HOURS) -> List[dict]:
+    cache_ttl_seconds = max(cache_ttl_hours, 1) * 3600
+
+    if not force_refresh and SOCIAL_CACHE_FILE.exists():
+        cache_age = time.time() - SOCIAL_CACHE_FILE.stat().st_mtime
+        if cache_age <= cache_ttl_seconds:
+            cached_documents = _load_cache(SOCIAL_CACHE_FILE)
+            if cached_documents:
+                return cached_documents
+
+    documents: List[dict] = []
+    for source in _get_effective_social_sources():
+        try:
+            response = requests.get(
+                source.url,
+                timeout=HTTP_TIMEOUT_SECONDS,
+                headers={"User-Agent": USER_AGENT},
+            )
+            response.raise_for_status()
+            text = _extract_text_from_html(response.text)
+            if not text or not _is_kdu_global_relevant_text(text):
+                continue
+
+            snippets = _extract_social_snippets(text)
+            for index, snippet in enumerate(snippets):
+                category = _infer_social_category(snippet)
+                documents.append(_build_social_document(source, snippet, index, category))
+        except Exception as exc:
+            print(f"Warning: failed to fetch social source {source.url}: {exc}")
+
+    if documents:
+        _save_cache(documents, SOCIAL_CACHE_FILE)
+        return documents
+
+    cached_documents = _load_cache(SOCIAL_CACHE_FILE)
+    if cached_documents:
+        return cached_documents
+
+    return []
 
 
 def get_official_source_pages() -> List[dict]:
@@ -259,12 +463,17 @@ def get_official_social_sources() -> List[dict]:
             "url": source.url,
             "source_page": source.source_page,
         }
-        for source in OFFICIAL_SOCIAL_SOURCES
+        for source in _get_effective_social_sources()
     ]
 
 
-def load_knowledge_base(force_refresh: bool = False, cache_ttl_hours: int = DEFAULT_CACHE_TTL_HOURS) -> List[dict]:
-    """Load the university knowledge base from the official KDU Global website."""
+def load_knowledge_base(
+    force_refresh: bool = False,
+    cache_ttl_hours: int = DEFAULT_CACHE_TTL_HOURS,
+    include_social: bool = True,
+    social_cache_ttl_hours: int = DEFAULT_SOCIAL_CACHE_TTL_HOURS,
+) -> List[dict]:
+    """Load the university knowledge base from official KDU Global web and verified social channels."""
     cache_ttl_seconds = max(cache_ttl_hours, 1) * 3600
 
     if not force_refresh and CACHE_FILE.exists():
@@ -272,6 +481,9 @@ def load_knowledge_base(force_refresh: bool = False, cache_ttl_hours: int = DEFA
         if cache_age <= cache_ttl_seconds:
             cached_documents = _load_cache()
             if cached_documents:
+                if include_social:
+                    social_documents = _load_social_documents(force_refresh=False, cache_ttl_hours=social_cache_ttl_hours)
+                    return cached_documents + social_documents
                 return cached_documents
 
     documents = []
@@ -283,10 +495,20 @@ def load_knowledge_base(force_refresh: bool = False, cache_ttl_hours: int = DEFA
 
     if documents:
         _save_cache(documents)
+        if include_social:
+            social_documents = _load_social_documents(force_refresh=force_refresh, cache_ttl_hours=social_cache_ttl_hours)
+            return documents + social_documents
         return documents
 
     cached_documents = _load_cache()
     if cached_documents:
+        if include_social:
+            social_documents = _load_social_documents(force_refresh=False, cache_ttl_hours=social_cache_ttl_hours)
+            return cached_documents + social_documents
         return cached_documents
 
-    return FALLBACK_DOCUMENTS.copy()
+    fallback_documents = FALLBACK_DOCUMENTS.copy()
+    if include_social:
+        social_documents = _load_social_documents(force_refresh=force_refresh, cache_ttl_hours=social_cache_ttl_hours)
+        return fallback_documents + social_documents
+    return fallback_documents

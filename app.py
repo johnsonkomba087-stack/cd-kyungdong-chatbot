@@ -366,7 +366,8 @@ def initialize_chatbot():
         sync_knowledge_base(
             chatbot,
             force_refresh=False,
-            status_message="📚 Loading official university website data..."
+            status_message="📚 Loading official KDU sources...",
+            include_social=st.session_state.get("include_social_sources", True),
         )
 
     print(f"Startup timing: initialize_chatbot completed in {time.perf_counter() - init_start:.2f}s")
@@ -374,11 +375,11 @@ def initialize_chatbot():
     return chatbot
 
 
-def sync_knowledge_base(chatbot, force_refresh: bool, status_message: str) -> None:
+def sync_knowledge_base(chatbot, force_refresh: bool, status_message: str, include_social: bool = True) -> None:
     """Fetch website content and refresh the chatbot knowledge base."""
     sync_start = time.perf_counter()
     with st.spinner(status_message):
-        documents = load_knowledge_base(force_refresh=force_refresh)
+        documents = load_knowledge_base(force_refresh=force_refresh, include_social=include_social)
         chatbot.add_documents(documents)
         st.session_state.documents_loaded = True
         st.session_state.knowledge_document_count = len(documents)
@@ -397,7 +398,8 @@ def get_chatbot():
                 sync_knowledge_base(
                     chatbot,
                     force_refresh=False,
-                    status_message="📚 Loading official university website data..."
+                    status_message="📚 Loading official KDU sources...",
+                    include_social=st.session_state.get("include_social_sources", True),
                 )
         return chatbot
     return st.session_state.chatbot
@@ -833,6 +835,16 @@ def main():
             value=st.session_state.get("tool_use_enabled", True),
             key="tool_toggle",
         )
+        st.session_state.include_social_sources = st.checkbox(
+            "Include Verified Official Social Sources",
+            value=st.session_state.get("include_social_sources", True),
+            key="social_source_toggle",
+            help=(
+                "Ingests verified public KDU Global social channels only. "
+                "Configure optional channels with KDU_GLOBAL_INSTAGRAM_URL, "
+                "KDU_GLOBAL_TIKTOK_URL, and KDU_GLOBAL_KAKAOTALK_URL."
+            ),
+        )
         st.session_state.profile_notes = st.text_area(
             "Preference Notes",
             value=st.session_state.get("profile_notes", ""),
@@ -1013,13 +1025,14 @@ def main():
             if st.session_state.get("knowledge_synced_at"):
                 st.caption(f"Last website sync: {st.session_state['knowledge_synced_at']}")
 
-            if st.button("🌐 Refresh Official Website Data", use_container_width=True):
+            if st.button("🌐 Refresh Official KDU Sources", use_container_width=True):
                 sync_knowledge_base(
                     chatbot,
                     force_refresh=True,
-                    status_message="🌐 Refreshing from official KDU Global website..."
+                    status_message="🌐 Refreshing official KDU website and social sources...",
+                    include_social=st.session_state.get("include_social_sources", True),
                 )
-                st.success("✅ Official website data refreshed")
+                st.success("✅ Official KDU sources refreshed")
                 st.rerun()
         except Exception as e:
             st.warning(f"⚠️ Collection error: {str(e)[:50]}")

@@ -996,6 +996,64 @@ Always maintain a professional and welcoming tone."""
             "I have not yet verified official public Instagram, TikTok, or KakaoTalk links from the KDU Global site, so those should stay out of automatic ingestion until an official URL is confirmed."
         )
 
+    def _extract_evidence_lines(self, retrieved_docs: List[RetrievedDocument], keywords: set[str], limit: int = 2) -> List[str]:
+        """Extract short, retrieval-grounded evidence lines for structured answers."""
+        if not retrieved_docs or not keywords:
+            return []
+
+        lines: List[str] = []
+        seen = set()
+        for doc in retrieved_docs:
+            sentences = re.split(r"(?<=[.!?])\s+|\n+", doc.content or "")
+            for sentence in sentences:
+                clean = re.sub(r"\s+", " ", sentence).strip(" -•\t\r\n")
+                if len(clean) < 25:
+                    continue
+                lowered = clean.lower()
+                if not any(keyword in lowered for keyword in keywords):
+                    continue
+                if lowered in seen:
+                    continue
+
+                seen.add(lowered)
+                if len(clean) > 190:
+                    clean = clean[:187].rstrip() + "..."
+                lines.append(clean)
+                if len(lines) >= limit:
+                    return lines
+        return lines
+
+    def _augment_structured_with_evidence(
+        self,
+        intent: str,
+        base_response: str,
+        retrieved_docs: List[RetrievedDocument],
+        response_language: str,
+    ) -> str:
+        """Append compact source evidence to reduce weak generic answers."""
+        if not base_response:
+            return base_response
+
+        intent_keywords = {
+            "tuition_fees": {"tuition", "fee", "fees", "usd", "dollar", "semester", "cost"},
+            "scholarship_info": {"scholarship", "financial aid", "tuition", "percent", "%", "ielts"},
+            "housing_info": {"housing", "dorm", "dormitory", "room", "accommodation", "semester"},
+            "visa_support": {"visa", "immigration", "arc", "residence", "d-4", "e-7", "f-2", "d-10"},
+            "documents_required": {"application", "document", "transcript", "passport", "study plan", "pdf"},
+            "application_process": {"application", "screening", "interview", "offer", "tuition payment", "visa"},
+        }
+
+        evidence = self._extract_evidence_lines(retrieved_docs, intent_keywords.get(intent, set()), limit=2)
+        if not evidence:
+            return base_response
+
+        if str(response_language).lower().startswith("korean"):
+            evidence_text = " ".join(f"{idx + 1}) {line}" for idx, line in enumerate(evidence))
+            return f"{base_response} 공식 소스 근거: {evidence_text}"
+
+        evidence_text = " ".join(f"{idx + 1}) {line}" for idx, line in enumerate(evidence))
+        return f"{base_response} Supporting official notes: {evidence_text}"
+
     def _compose_structured_response(
         self,
         query: str,
@@ -1006,26 +1064,30 @@ Always maintain a professional and welcoming tone."""
         """Return a structured answer for important question types when official data is clear."""
         intent = self._classify_query_intent(query)
 
-        if intent == "documents_required":
-            return self._compose_documents_required_response(query, retrieved_docs, response_language, conversation_summary)
-        if intent == "application_process":
-            return self._compose_application_process_response(response_language)
-        if intent == "deadlines":
-            return self._compose_deadline_response(response_language)
-        if intent == "eligibility_requirements":
-            return self._compose_eligibility_response(query, response_language, conversation_summary)
-        if intent == "tuition_fees":
-            return self._compose_tuition_response(response_language)
-        if intent == "scholarship_info":
-            return self._compose_scholarship_response(response_language)
-        if intent == "housing_info":
-            return self._compose_housing_response(response_language)
-        if intent == "visa_support":
-            return self._compose_visa_response(response_language)
-        if intent == "social_media":
-            return self._compose_social_media_response(response_language)
+        response = ""
 
-        return ""
+        if intent == "documents_required":
+            response = self._compose_documents_required_response(query, retrieved_docs, response_language, conversation_summary)
+        elif intent == "application_process":
+            response = self._compose_application_process_response(response_language)
+        elif intent == "deadlines":
+            response = self._compose_deadline_response(response_language)
+        elif intent == "eligibility_requirements":
+            response = self._compose_eligibility_response(query, response_language, conversation_summary)
+        elif intent == "tuition_fees":
+            response = self._compose_tuition_response(response_language)
+        elif intent == "scholarship_info":
+            response = self._compose_scholarship_response(response_language)
+        elif intent == "housing_info":
+            response = self._compose_housing_response(response_language)
+        elif intent == "visa_support":
+            response = self._compose_visa_response(response_language)
+        elif intent == "social_media":
+            response = self._compose_social_media_response(response_language)
+
+        if not response:
+            return ""
+        return self._augment_structured_with_evidence(intent, response, retrieved_docs, response_language)
 
     def _polish_assistant_response(
         self,
