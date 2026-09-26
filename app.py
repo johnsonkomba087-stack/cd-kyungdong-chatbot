@@ -273,6 +273,11 @@ def load_admin_password() -> str:
     except Exception:
         pass
 
+    # Render-friendly mapping that mirrors env vars into secret-style names.
+    mapped_secret = str(os.getenv("STREAMLIT_SECRETS_ADMIN_PASSWORD", "")).strip()
+    if mapped_secret:
+        return mapped_secret
+
     return str(os.getenv("ADMIN_PASSWORD", "")).strip()
 
 
@@ -294,6 +299,7 @@ def load_groq_api_key() -> str:
         pass
 
     candidate_values = [
+        os.getenv("STREAMLIT_SECRETS_GROQ_API_KEY", ""),
         os.getenv("GROQ_API_KEY", ""),
         os.getenv("GROQ_KEY", ""),
         os.getenv("GROQ_APIKEY", ""),
@@ -1317,4 +1323,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:  # pragma: no cover
+        print(f"Unhandled app error: {exc}")
+        st.error(
+            "Something went wrong while loading the app. "
+            "Please refresh the page in a few seconds."
+        )
