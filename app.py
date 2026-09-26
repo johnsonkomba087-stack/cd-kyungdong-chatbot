@@ -45,7 +45,7 @@ st.set_page_config(
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.chatbot_rag import KyungdongRAGChatbot
-from src.knowledge_base import get_official_source_pages, load_knowledge_base
+from src.knowledge_base import get_official_social_sources, get_official_source_pages, load_knowledge_base
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -410,7 +410,10 @@ def display_sources(retrieved_docs) -> None:
                 score_label = "🟢 Low"
             
             with st.expander(f"📄 Source {i}: {doc.source} - {score_label}", expanded=(i==1)):
-                st.write(doc.content)
+                snippet = str(doc.content or "").strip()
+                if len(snippet) > 280:
+                    snippet = snippet[:277].rstrip() + "..."
+                st.write(snippet)
                 if doc.url:
                     st.markdown(f"[Open official source page]({doc.url})")
                 st.markdown(
@@ -937,6 +940,14 @@ def main():
         with st.expander("🌐 Official Website Sources"):
             for page in get_official_source_pages():
                 st.markdown(f"- [{page['title']}]({page['url']})")
+
+        with st.expander("📱 Official Social Channels"):
+            social_sources = get_official_social_sources()
+            if social_sources:
+                for source in social_sources:
+                    st.markdown(f"- [{source['label']}]({source['url']})")
+            else:
+                st.caption("No verified social channels configured yet.")
     
     # Check for API key
     chatbot = get_chatbot()
@@ -1124,6 +1135,19 @@ def main():
                 "Ask about admissions, programs, scholarships, campus life, or student services...",
                 key="chat_input"
             )
+            if not user_input:
+                fallback_col1, fallback_col2 = st.columns([4, 1])
+                with fallback_col1:
+                    fallback_text = st.text_input(
+                        "If chat input is unresponsive, type here",
+                        key="chat_input_fallback",
+                        placeholder="Type your question and press Send",
+                    )
+                with fallback_col2:
+                    send_fallback = st.button("Send", use_container_width=True, key="chat_input_fallback_send")
+                if send_fallback and fallback_text.strip():
+                    user_input = fallback_text.strip()
+                    st.session_state.chat_input_fallback = ""
     
     # Process user input
     if user_input:
@@ -1172,22 +1196,32 @@ def main():
             else:
                 tool_result = None
                 if st.session_state.get("tool_use_enabled", True):
-                    tool_result = chatbot.handle_tool_action(user_input)
+                    try:
+                        tool_result = chatbot.handle_tool_action(user_input)
+                    except Exception as exc:
+                        tool_result = None
+                        st.warning("Tool action is temporarily unavailable; continuing with standard answer mode.")
+                        print(f"Tool action error: {exc}")
 
                 if tool_result and tool_result.handled:
                     tool_action = tool_result.action
                     tool_payload = tool_result.payload or {}
                     response = tool_result.response
                 else:
-                    with st.spinner("🔍 Searching knowledge base..."):
-                        retrieved_docs = chatbot.retrieve_documents(user_input, top_k=3)
+                    with st.spinner("🔍 Searching official sources..."):
+                        try:
+                            retrieved_docs = chatbot.retrieve_documents(user_input, top_k=3)
+                        except Exception as exc:
+                            retrieved_docs = []
+                            st.warning("I could not search official sources right now. I will answer cautiously.")
+                            print(f"Retrieval error: {exc}")
 
                     if len(retrieved_docs) > 0:
                         st.success(f"✓ Found {len(retrieved_docs)} relevant document(s)")
                     else:
                         st.warning("⚠️ No relevant documents found - generating general response")
 
-                    with st.spinner("💭 Generating response..."):
+                    with st.spinner("💭 Drafting response..."):
                         resolved_language = resolve_response_language(
                             user_input,
                             st.session_state.get("response_language", "English"),
@@ -1199,12 +1233,21 @@ def main():
                             "profile_notes": st.session_state.get("profile_notes", ""),
                             "conversation_summary": st.session_state.get("conversation_summary", ""),
                         }
-                        response, docs_used = chatbot.generate_response(
-                            user_input,
-                            retrieved_docs,
-                            style_options=style_options,
-                            conversation_history=prior_history,
-                        )
+                        try:
+                            response, docs_used = chatbot.generate_response(
+                                user_input,
+                                retrieved_docs,
+                                style_options=style_options,
+                                conversation_history=prior_history,
+                            )
+                        except Exception as exc:
+                            docs_used = []
+                            response = (
+                                "I ran into a temporary issue while generating a response. "
+                                "Please try again in a few seconds, or ask a narrower question such as program, tuition, scholarship, or dormitory details."
+                            )
+                            st.error("Response generation failed temporarily.")
+                            print(f"Generation error: {exc}")
 
                 unknown = "i don't know based on official data currently loaded" in response.lower()
             

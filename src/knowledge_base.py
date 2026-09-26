@@ -29,6 +29,14 @@ class OfficialPage:
     category: str
 
 
+@dataclass(frozen=True)
+class OfficialSocialSource:
+    platform: str
+    label: str
+    url: str
+    source_page: str
+
+
 OFFICIAL_PAGE_SOURCES = [
     OfficialPage("About KDU", "https://global.kduniv.ac.kr/global/index.php?pCode=1636357850", "overview"),
     OfficialPage("Why KDU Global", "https://global.kduniv.ac.kr/global/index.php?pCode=1637029989", "overview"),
@@ -45,6 +53,21 @@ OFFICIAL_PAGE_SOURCES = [
     OfficialPage("Part-time Job Support", "https://global.kduniv.ac.kr/global/index.php?pCode=1742272258", "student_services"),
     OfficialPage("Career Development Center", "https://global.kduniv.ac.kr/global/index.php?pCode=1742272266", "student_services"),
     OfficialPage("Counselling and Human Rights Center", "https://global.kduniv.ac.kr/global/index.php?pCode=1742272273", "student_services"),
+]
+
+OFFICIAL_SOCIAL_SOURCES = [
+    OfficialSocialSource(
+        platform="facebook",
+        label="KDU Global Facebook",
+        url="https://www.facebook.com/prof.john.k.lee",
+        source_page="https://global.kduniv.ac.kr/global/",
+    ),
+    OfficialSocialSource(
+        platform="youtube",
+        label="KDU Global YouTube",
+        url="https://www.youtube.com/@kduglobal9167",
+        source_page="https://global.kduniv.ac.kr/global/",
+    ),
 ]
 
 FALLBACK_DOCUMENTS = [
@@ -226,6 +249,18 @@ def _save_cache(documents: Iterable[dict]) -> None:
 
 def get_official_source_pages() -> List[dict]:
     return [{"title": page.title, "url": page.url, "category": page.category} for page in OFFICIAL_PAGE_SOURCES]
+
+
+def get_official_social_sources() -> List[dict]:
+    return [
+        {
+            "platform": source.platform,
+            "label": source.label,
+            "url": source.url,
+            "source_page": source.source_page,
+        }
+        for source in OFFICIAL_SOCIAL_SOURCES
+    ]
 
 
 def load_knowledge_base(force_refresh: bool = False, cache_ttl_hours: int = DEFAULT_CACHE_TTL_HOURS) -> List[dict]:

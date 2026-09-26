@@ -3,6 +3,19 @@
 ## Overview
 This guide will help you deploy the Kyungdong University RAG Chatbot to the public internet using GitHub and Streamlit Cloud.
 
+## Render Reliability Setup (Recommended)
+If you deploy on Render, configure secrets before first boot to avoid startup failures.
+
+1. Open Render Dashboard > your service > Environment.
+2. Add secret key GROQ_API_KEY with your real Groq API key value.
+3. Redeploy the service.
+4. Verify logs show startup success and no missing-key errors.
+
+Notes:
+- For stable uptime, prefer a paid Render plan; free instances can sleep and cold-start.
+- Alternatives with better always-on behavior include Railway, Fly.io, and Modal.
+- Never commit secrets.toml with real keys to GitHub.
+
 ## Prerequisites
 - GitHub account (free at https://github.com)
 - Git installed on your computer

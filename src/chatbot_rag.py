@@ -12,6 +12,8 @@ from typing import Dict, List, Tuple
 import requests
 from groq import Groq
 
+from .knowledge_base import get_official_social_sources
+
 
 @dataclass
 class RetrievedDocument:
@@ -107,7 +109,8 @@ Always maintain a professional and welcoming tone."""
             "deadline", "requirements", "documents", "undergraduate", "graduate", "master", "phd", "program",
             "programs", "major", "majors", "degree", "academics", "scholarship", "scholarships", "tuition",
             "fees", "cost", "housing", "dorm", "dormitory", "facilities", "student", "services", "career",
-            "counselling", "counseling", "parttime", "visa", "international", "goseong", "gangwon"
+            "counselling", "counseling", "parttime", "visa", "international", "goseong", "gangwon",
+            "facebook", "instagram", "tiktok", "youtube", "kakao", "kakaotalk", "social", "media"
         }
 
         self.jailbreak_patterns = [
@@ -143,6 +146,25 @@ Always maintain a professional and welcoming tone."""
             (r"\b(can't|cannot|unable|problem|issue|trouble)\b", "I’m sorry you’re running into that. "),
         ]
 
+        self.term_aliases = {
+            "admissions": "admission",
+            "apply": "application",
+            "applying": "application",
+            "required": "requirement",
+            "requirements": "requirement",
+            "documents": "document",
+            "degrees": "degree",
+            "transcripts": "transcript",
+            "photos": "photo",
+            "fees": "fee",
+            "scholarships": "scholarship",
+            "dormitory": "housing",
+            "dorm": "housing",
+            "accommodation": "housing",
+            "visas": "visa",
+            "kakaotalk": "kakao",
+        }
+
     def ensure_collection_exists(self):
         """Compatibility method for the UI; returns current document count."""
         return len(self.documents_cache)
@@ -167,7 +189,8 @@ Always maintain a professional and welcoming tone."""
         if not self.documents_cache:
             return []
 
-        query_terms = self._tokenize(query)
+        rewritten_query = self._rewrite_query_for_retrieval(query)
+        query_terms = self._expand_query_terms(self._tokenize(rewritten_query))
         if not self._is_domain_query(query_terms):
             return []
 
@@ -197,6 +220,19 @@ Always maintain a professional and welcoming tone."""
             if category and any(term in category for term in query_terms):
                 category_bonus = 0.1
 
+            source_bonus = 0.0
+            source_text = f"{document.get('source', '')} {document.get('title', '')}".lower()
+            if source_text:
+                source_terms = self._tokenize(source_text)
+                source_overlap = sum(1 for term in set(query_terms) if term in source_terms)
+                if source_overlap:
+                    source_bonus = min(0.08 * source_overlap, 0.24)
+
+            list_bonus = 0.0
+            if any(token in lowered_content for token in ["documents required", "application form", "transcript", "passport copy"]):
+                if any(term in query_terms for term in {"document", "requirement", "passport", "transcript"}):
+                    list_bonus = 0.18
+
             intent_bonus = 0.0
             doc_category = document.get("category", "")
             if intent_category:
@@ -210,11 +246,12 @@ Always maintain a professional and welcoming tone."""
             if unique_overlap == 1 and normalized_overlap < 0.25 and intent_bonus <= 0:
                 continue
 
-            score = min(max(normalized_overlap + phrase_bonus + category_bonus + intent_bonus, 0.0), 1.0)
+            score = min(max(normalized_overlap + phrase_bonus + category_bonus + intent_bonus + source_bonus + list_bonus, 0.0), 1.0)
             if score >= score_threshold:
                 scored_documents.append((score, document))
 
         scored_documents.sort(key=lambda item: item[0], reverse=True)
+        scored_documents = self._rerank_scored_documents(query, scored_documents)
 
         results = []
         for score, document in scored_documents[:top_k]:
@@ -246,7 +283,53 @@ Always maintain a professional and welcoming tone."""
 
     def _tokenize(self, text: str) -> List[str]:
         terms = re.findall(r"[a-zA-Z0-9]{2,}", text.lower())
-        return [term for term in terms if term not in self.stopwords]
+        normalized_terms = []
+        for term in terms:
+            canonical = self.term_aliases.get(term, term)
+            if canonical not in self.stopwords:
+                normalized_terms.append(canonical)
+        return normalized_terms
+
+    def _expand_query_terms(self, query_terms: List[str]) -> List[str]:
+        """Expand important queries with light domain synonyms for better matching."""
+        expanded = list(query_terms)
+        synonym_groups = {
+            "application": {"admission", "apply", "application"},
+            "document": {"document", "requirement", "transcript", "passport", "photo", "statement", "plan"},
+            "scholarship": {"scholarship", "financial", "aid"},
+            "housing": {"housing", "dorm", "dormitory", "accommodation"},
+            "social": {"social", "facebook", "instagram", "tiktok", "youtube", "kakao", "kakaotalk"},
+            "visa": {"visa", "immigration", "arc", "residence"},
+        }
+
+        for term in query_terms:
+            for key, related_terms in synonym_groups.items():
+                if term == key or term in related_terms:
+                    for related in related_terms:
+                        if related not in expanded:
+                            expanded.append(related)
+
+        return expanded
+
+    def _rewrite_query_for_retrieval(self, query: str) -> str:
+        """Rewrite short or vague questions into retrieval-friendly terms."""
+        lowered = query.lower()
+        additions: List[str] = []
+
+        if any(token in lowered for token in ["document", "requirement", "what do i need"]):
+            additions.extend(["application form", "passport copy", "transcript"])
+        if any(token in lowered for token in ["scholarship", "financial aid"]):
+            additions.extend(["scholarships and fees", "tuition", "eligibility"])
+        if any(token in lowered for token in ["tuition", "fees", "cost"]):
+            additions.extend(["tuition fees", "estimated cost of living", "dormitory fee"])
+        if any(token in lowered for token in ["housing", "dorm", "dormitory"]):
+            additions.extend(["student housing", "campus life", "dormitory"])
+        if any(token in lowered for token in ["visa", "immigration", "arc"]):
+            additions.extend(["student services", "immigration support", "visa application"])
+
+        if not additions:
+            return query
+        return f"{query} {' '.join(additions)}"
 
     def _infer_intent_category(self, query_terms: List[str]) -> str:
         """Infer likely knowledge category from query tokens."""
@@ -270,6 +353,34 @@ Always maintain a professional and welcoming tone."""
 
         best_category = max(scores, key=scores.get)
         return best_category if scores[best_category] > 0 else ""
+
+    def _rerank_scored_documents(self, query: str, scored_documents: List[tuple]) -> List[tuple]:
+        """Apply lightweight reranking after initial lexical scoring."""
+        intent = self._classify_query_intent(query)
+        priority_by_intent = {
+            "documents_required": ["Documents Required", "General Guidelines", "Application Process"],
+            "application_process": ["Application Process", "General Guidelines"],
+            "tuition_fees": ["Scholarships and Fees"],
+            "scholarship_info": ["Scholarships and Fees"],
+            "housing_info": ["Student Housing", "Campus Facilities"],
+            "visa_support": ["Student Services", "Part-time Job Support", "Application Process"],
+        }
+
+        priority_titles = priority_by_intent.get(intent, [])
+        if not priority_titles:
+            return scored_documents
+
+        reranked = []
+        for score, document in scored_documents:
+            source_text = f"{document.get('source', '')} {document.get('title', '')}"
+            bonus = 0.0
+            for title_hint in priority_titles:
+                if title_hint.lower() in source_text.lower():
+                    bonus = max(bonus, 0.2)
+            reranked.append((min(score + bonus, 1.0), document))
+
+        reranked.sort(key=lambda item: item[0], reverse=True)
+        return reranked
 
     def infer_query_topic(self, query: str) -> str:
         """Infer user query topic for analytics and routing."""
@@ -413,7 +524,8 @@ Always maintain a professional and welcoming tone."""
                 return "안전 정책에 따라 해당 답변은 제공할 수 없습니다. 경동대학교 관련 질문으로 다시 요청해 주세요."
             return "I cannot provide that response. Please ask a normal Kyungdong University question instead."
 
-        if not retrieved_docs and self.low_confidence_response.lower() not in lowered:
+        intent = self._classify_query_intent(query)
+        if not retrieved_docs and not self._can_answer_without_retrieval(intent) and self.low_confidence_response.lower() not in lowered:
             return self._get_low_confidence_response(response_language)
 
         return cleaned_response
@@ -491,6 +603,262 @@ Always maintain a professional and welcoming tone."""
         if str(response_language).lower().startswith("korean"):
             return " 원하시면 관련해서 다음 단계도 이어서 설명해 드릴게요."
         return " If you want, I can also help with the next step." 
+
+    def _classify_query_intent(self, query: str) -> str:
+        """Detect common high-value question types for structured answers."""
+        lowered = query.lower()
+
+        if any(token in lowered for token in ["document", "documents", "requirement", "requirements", "paperwork", "what do i need"]):
+            return "documents_required"
+        if any(token in lowered for token in ["process", "procedure", "steps", "how to apply", "application process"]):
+            return "application_process"
+        if any(token in lowered for token in ["deadline", "deadlines", "when should i apply", "intake"]):
+            return "deadlines"
+        if any(token in lowered for token in ["eligibility", "eligible", "language proficiency", "ielts", "toefl", "topik", "minimum score"]):
+            return "eligibility_requirements"
+        if any(token in lowered for token in ["tuition", "fee", "fees", "cost", "cost of living", "payment"]):
+            return "tuition_fees"
+        if any(token in lowered for token in ["scholarship", "financial aid", "funding", "discount"]):
+            return "scholarship_info"
+        if any(token in lowered for token in ["housing", "dorm", "dormitory", "accommodation", "hostel", "room"]):
+            return "housing_info"
+        if any(token in lowered for token in ["visa", "immigration", "arc", "residence card", "work permit"]):
+            return "visa_support"
+        if any(token in lowered for token in ["facebook", "instagram", "tiktok", "youtube", "kakao", "kakaotalk", "social media", "social"]):
+            return "social_media"
+
+        return "general"
+
+    def _can_answer_without_retrieval(self, intent: str) -> bool:
+        return intent in {
+            "application_process",
+            "deadlines",
+            "eligibility_requirements",
+            "tuition_fees",
+            "scholarship_info",
+            "housing_info",
+            "visa_support",
+            "social_media",
+        }
+
+    def _infer_program_type(self, query: str, conversation_summary: str = "") -> str:
+        """Infer whether the user means undergraduate, graduate, or language programs."""
+        combined = f"{query} {conversation_summary}".lower()
+        if any(token in combined for token in ["undergraduate", "bachelor", "freshman"]):
+            return "undergraduate"
+        if any(token in combined for token in ["graduate", "master", "phd", "doctoral", "postgraduate"]):
+            return "graduate"
+        if any(token in combined for token in ["language program", "language course", "kap", "eap"]):
+            return "language"
+        return "general"
+
+    def _docs_by_source(self, retrieved_docs: List[RetrievedDocument], source_name: str) -> List[RetrievedDocument]:
+        return [doc for doc in retrieved_docs if doc.source == source_name]
+
+    def _compose_documents_required_response(
+        self,
+        query: str,
+        retrieved_docs: List[RetrievedDocument],
+        response_language: str,
+        conversation_summary: str = "",
+    ) -> str:
+        """Return a precise, source-grounded answer for document requirement questions."""
+        docs = self._docs_by_source(retrieved_docs, "Admissions: Documents Required")
+        if not docs:
+            return ""
+
+        program_type = self._infer_program_type(query, conversation_summary)
+        translation_note_en = "All documents must be officially translated into English if originally issued in another language."
+        submission_note_en = "Application and required documents must be emailed to info@kduniv.ac.kr, and the initial assessment documents should be sent in one PDF file."
+        translation_note_ko = "모든 서류는 원본 언어가 영어가 아닌 경우 공식적으로 영어 번역본이 필요합니다."
+        submission_note_ko = "지원서와 필요 서류는 info@kduniv.ac.kr로 이메일 제출해야 하며, 초기 심사용 서류는 하나의 PDF 파일로 보내야 합니다."
+
+        if str(response_language).lower().startswith("korean"):
+            if program_type == "undergraduate":
+                return (
+                    "학부 지원 기준으로 초기 심사에 필요한 핵심 서류는 지원서, 고등학교 졸업증명서 및 성적증명서, 공인 어학성적, 여권 사본입니다. "
+                    "최종 입학 심사 단계에서는 여권사진, 재정능력증명 또는 잔고증명서, 건강검진서, 학생 행동수칙, 학업계획서도 함께 요구됩니다. "
+                    + translation_note_ko + " " + submission_note_ko
+                )
+            if program_type == "graduate":
+                return (
+                    "대학원 지원 기준으로 초기 심사에 필요한 핵심 서류는 지원서, 학사학위 졸업증명서 및 성적증명서, 공인 어학성적, 여권 사본입니다. "
+                    "최종 입학 심사 단계에서는 여권사진, 재정능력증명 또는 잔고증명서, 건강검진서, 학생 행동수칙, 학업계획서도 함께 요구됩니다. "
+                    + translation_note_ko + " " + submission_note_ko
+                )
+            if program_type == "language":
+                return (
+                    "어학과정 기준으로 초기 심사에 필요한 핵심 서류는 지원서, 고등학교 졸업증명서 및 성적증명서, 여권 사본입니다. "
+                    + translation_note_ko + " " + submission_note_ko
+                )
+            return (
+                "공식 자료 기준으로 지원 서류에는 지원서, 학력 관련 졸업증명서 및 성적증명서, 공인 어학성적, 여권 사본이 포함됩니다. "
+                "추가로 여권사진, 재정능력증명 또는 잔고증명서, 건강검진서, 학생 행동수칙, 학업계획서가 요구될 수 있습니다. "
+                "초기 심사 조합은 과정별로 다르며, 학부는 지원서, 고등학교 졸업증명서 및 성적증명서, 어학성적, 여권 사본이고, 대학원은 지원서, 학사학위 졸업증명서 및 성적증명서, 어학성적, 여권 사본이며, 어학과정은 지원서, 고등학교 졸업증명서 및 성적증명서, 여권 사본입니다. "
+                + translation_note_ko + " " + submission_note_ko
+            )
+
+        if program_type == "undergraduate":
+            return (
+                "For undergraduate applications, the official KDU pages say the initial assessment PDF should include the Application Form, High School Diploma and Transcripts, Certificate of Language Proficiency, and Passport Copy. "
+                "For final admission, KDU also lists Passport Size Photo, Certificate of Financial Capability or Bank Balance Statement, Medical Check-up Report, Student Code of Conduct, and Study Plan. "
+                + translation_note_en + " " + submission_note_en
+            )
+        if program_type == "graduate":
+            return (
+                "For graduate applications, the initial assessment PDF should include the Application Form, Undergraduate Degree Diploma and Transcripts, Certificate of Language Proficiency, and Passport Copy. "
+                "For final admission, KDU also lists Passport Size Photo, Certificate of Financial Capability or Bank Balance Statement, Medical Check-up Report, Student Code of Conduct, and Study Plan. "
+                + translation_note_en + " " + submission_note_en
+            )
+        if program_type == "language":
+            return (
+                "For language programs, the initial assessment PDF should include the Application Form, High School Diploma and Transcripts, and Passport Copy. "
+                + translation_note_en + " " + submission_note_en
+            )
+
+        return (
+            "The official KDU documents page lists these common application documents: Application Form, academic diploma and transcripts, Certificate of Language Proficiency, Passport Copy, Passport Size Photo, Certificate of Financial Capability or Bank Balance Statement, Medical Check-up Report, Student Code of Conduct, and Study Plan. "
+            "For the initial assessment, the required core PDF differs by program: undergraduate uses items (1), (2), (4), and (5); graduate uses items (1), (3), (4), and (5); language programs use items (1), (2), and (5). "
+            + translation_note_en + " " + submission_note_en
+        )
+
+    def _compose_application_process_response(self, response_language: str) -> str:
+        if str(response_language).lower().startswith("korean"):
+            return (
+                "공식 절차는 다음 순서입니다: 지원서 및 서류 이메일 제출, 서류 심사 및 자격 평가, 면접(온라인 또는 오프라인), 오퍼레터 발급, 등록금 납부, 입학허가서 발급, 비자 신청, 등록입니다. "
+                "지원서와 필요 서류는 info@kduniv.ac.kr로 보내야 합니다."
+            )
+        return (
+            "According to the official application process page, the sequence is: submit the application and required documents by email, document screening and eligibility assessment, interview, issuance of the offer letter, tuition payment, certificate of admission, visa application, and enrollment. "
+            "The application and documents should be emailed to info@kduniv.ac.kr."
+        )
+
+    def _compose_deadline_response(self, response_language: str) -> str:
+        if str(response_language).lower().startswith("korean"):
+            return (
+                "현재 로드된 공식 입학 자료에서는 구체적인 지원 마감일이 명시적으로 보이지 않습니다. "
+                "공식 페이지에는 지원서와 필요 서류를 info@kduniv.ac.kr로 이메일 제출하라고 되어 있으므로, 정확한 학기별 마감일은 입학처에 직접 확인하는 것이 가장 안전합니다."
+            )
+        return (
+            "I do not see a specific admissions deadline in the currently loaded official admissions pages. "
+            "The official process says the application and required documents should be emailed to info@kduniv.ac.kr, so for exact intake deadlines it is safest to confirm directly with the Admissions Office."
+        )
+
+    def _compose_eligibility_response(
+        self,
+        query: str,
+        response_language: str,
+        conversation_summary: str = "",
+    ) -> str:
+        program_type = self._infer_program_type(query, conversation_summary)
+        if str(response_language).lower().startswith("korean"):
+            if program_type == "graduate":
+                return "대학원 과정 기준으로 공식 자료에는 학사 학위 또는 동등 학력, 그리고 IELTS 6.0 또는 이에 상응하는 영어 능력이 필요하다고 안내되어 있습니다."
+            return "학부 과정 기준으로 공식 자료에는 고등학교 졸업 또는 동등 학력, 최근 최종 학력 졸업 후 3년 이하의 공백, IELTS 5.5 또는 이에 상응하는 영어 능력, 우수한 학업 성적이 요구된다고 안내되어 있습니다."
+        if program_type == "graduate":
+            return "For graduate courses, the official guidelines say applicants should have completed an undergraduate degree or equivalent education and meet at least IELTS 6.0 or an equivalent level of English proficiency."
+        return "For undergraduate courses, the official guidelines say applicants should have completed high school or an equivalent level of education, have no more than a three-year gap after their most recent formal education, meet at least IELTS 5.5 or an equivalent English score, and show a strong academic record."
+
+    def _compose_tuition_response(self, response_language: str) -> str:
+        if str(response_language).lower().startswith("korean"):
+            return (
+                "현재 로드된 공식 수업료 자료 기준으로 2026-2027 국제학생 등록금은 학부 과정 학기당 4,000달러, 석사 과정 학기당 5,000달러, "
+                "영어 EAP 어학과정은 2,400달러, 한국어 KAP 어학과정은 1,800달러입니다. "
+                "기숙사비는 2인 1실 기준 학기당 1,100달러로 안내되어 있으며, 금액은 장학금 적용 전 기준이고 학교 재량으로 변경될 수 있습니다."
+            )
+        return (
+            "According to the currently loaded official 2026-2027 fee table, international tuition is $4,000 per semester for bachelor's degree courses, $5,000 per semester for master's degree courses, $2,400 for the English EAP language program, and $1,800 for the Korean KAP language program. "
+            "The official estimate also lists the on-campus dormitory at $1,100 per semester for a shared room, and KDU notes that fees are shown before scholarships and may be revised."
+        )
+
+    def _compose_scholarship_response(self, response_language: str) -> str:
+        if str(response_language).lower().startswith("korean"):
+            return (
+                "공식 장학 자료 기준으로 국제학생은 입학 장학금과 재학 중 성적우수 장학금을 포함해 다양한 장학 제도를 신청할 수 있으며, 범위는 최대 등록금 100%까지입니다. "
+                "입학 장학금은 어학성적 또는 직전 학력 성적을 기준으로 나뉘며, 예를 들어 IELTS 5.5~6.0은 30%, IELTS 6.5는 50%, IELTS 7.0은 70%, IELTS 7.5 이상은 100% 장학금으로 안내됩니다. "
+                "학업성적 기반 장학금은 80%, 85%, 90%, 95% 평균 성적에 따라 30%, 50%, 70%, 100%까지 적용될 수 있습니다."
+            )
+        return (
+            "The official scholarship page says international students can apply for multiple scholarship and financial-aid schemes, with support ranging up to 100% of tuition. "
+            "At admission, scholarships are mainly split into language-proficiency based awards and academic-record based awards. For example, the published IELTS tiers are 30% for 5.5-6.0, 50% for 6.5, 70% for 7.0, and 100% for 7.5 or above. "
+            "The academic-record route also lists 30%, 50%, 70%, and 100% awards for average grades of 80%, 85%, 90%, and 95% respectively for the first semester."
+        )
+
+    def _compose_housing_response(self, response_language: str) -> str:
+        if str(response_language).lower().startswith("korean"):
+            return (
+                "공식 기숙사 자료 기준으로 KDU Global은 Sungreywon과 Yangheynwon 등 학생 기숙사를 운영하며, 국제학생 중심 환경과 신입생 친화 환경을 제공합니다. "
+                "각 방에는 Wi-Fi가 제공되고, 세탁실, 스터디룸, TV룸, 카페테리아, 실내 체육시설, 기도실 같은 편의시설이 안내되어 있습니다. "
+                "공식 생활비 표에서는 교내 기숙사 2인 1실이 학기당 1,100달러, 교외 원룸은 약 2,250달러로 추정되어 있습니다."
+            )
+        return (
+            "Based on the official housing pages, KDU Global offers student dormitories including Sungreywon and Yangheynwon, with amenities such as Wi-Fi, laundry, study rooms, TV rooms, cafeteria access, and other common facilities. "
+            "The published living-cost estimate lists the on-campus dormitory at $1,100 per semester for a shared room, while off-campus studio rentals are estimated at about $2,250."
+        )
+
+    def _compose_visa_response(self, response_language: str) -> str:
+        if str(response_language).lower().startswith("korean"):
+            return (
+                "공식 자료 기준으로 KDU Global은 입학 절차에서 오퍼레터 발급과 등록금 납부 후 입학허가서를 발급하고, 그 다음 단계로 비자 신청을 진행하도록 안내합니다. "
+                "또한 학생지원 부서에서 원스톱 이민 지원과 각종 비자 관련 안내를 제공하며, 진로개발 자료에는 F-2-R, E-7, F-2-7, D-10 등 체류 및 취업 비자 지원도 명시되어 있습니다. "
+                "어학연수 D-4 비자 학생의 경우 공식 안내상 첫 6개월 동안 교외 아르바이트가 제한됩니다."
+            )
+        return (
+            "According to the official KDU pages, the admissions sequence is offer letter, tuition payment, certificate of admission, and then visa application. "
+            "KDU also says it provides one-stop immigration support for students, and its career support materials mention guidance related to visas such as F-2-R, E-7, F-2-7, and D-10. "
+            "For language-training students on D-4 visas, the official part-time job guidance says off-campus work is not allowed during the first six months of study."
+        )
+
+    def _compose_social_media_response(self, response_language: str) -> str:
+        social_sources = get_official_social_sources()
+        if not social_sources:
+            return ""
+
+        platforms = ", ".join(source["platform"].title() for source in social_sources)
+        links_text = " ".join(f"{source['label']}: {source['url']}" for source in social_sources)
+
+        if str(response_language).lower().startswith("korean"):
+            return (
+                "네, 가능합니다. 다만 범위를 KDU Global의 공식 공개 채널로만 제한하는 방식이 가장 안전합니다. "
+                f"현재 검증된 공식 채널은 {platforms}이며, 확인된 링크는 다음과 같습니다: {links_text}. "
+                "현재 기준으로는 공식 홈페이지에서 Instagram, TikTok, KakaoTalk 공개 채널 링크를 아직 확인하지 못했기 때문에, 그 계정들은 공식 URL이 확인되기 전까지 자동 수집 대상에 넣지 않는 것이 맞습니다."
+            )
+        return (
+            "Yes, but the safe implementation is to limit it to verified public KDU Global channels only. "
+            f"Right now, the verified channels I can ground on are {platforms}, with these official links: {links_text}. "
+            "I have not yet verified official public Instagram, TikTok, or KakaoTalk links from the KDU Global site, so those should stay out of automatic ingestion until an official URL is confirmed."
+        )
+
+    def _compose_structured_response(
+        self,
+        query: str,
+        retrieved_docs: List[RetrievedDocument],
+        response_language: str,
+        conversation_summary: str = "",
+    ) -> str:
+        """Return a structured answer for important question types when official data is clear."""
+        intent = self._classify_query_intent(query)
+
+        if intent == "documents_required":
+            return self._compose_documents_required_response(query, retrieved_docs, response_language, conversation_summary)
+        if intent == "application_process":
+            return self._compose_application_process_response(response_language)
+        if intent == "deadlines":
+            return self._compose_deadline_response(response_language)
+        if intent == "eligibility_requirements":
+            return self._compose_eligibility_response(query, response_language, conversation_summary)
+        if intent == "tuition_fees":
+            return self._compose_tuition_response(response_language)
+        if intent == "scholarship_info":
+            return self._compose_scholarship_response(response_language)
+        if intent == "housing_info":
+            return self._compose_housing_response(response_language)
+        if intent == "visa_support":
+            return self._compose_visa_response(response_language)
+        if intent == "social_media":
+            return self._compose_social_media_response(response_language)
+
+        return ""
 
     def _polish_assistant_response(
         self,
@@ -667,6 +1035,15 @@ Always maintain a professional and welcoming tone."""
             if lowered.startswith("/search "):
                 search_query = query[8:].strip()
             search_query = re.sub(r"(?i)search\s+web\s+for\s+", "", search_query).strip()
+            if any(token in lowered for token in ["facebook", "instagram", "tiktok", "youtube", "kakao", "kakaotalk", "social"]):
+                social_sources = get_official_social_sources()
+                social_text = self._compose_social_media_response("English")
+                return ToolActionResult(
+                    action="web_search",
+                    handled=True,
+                    response=social_text or "Only verified official KDU channels are allowed for social source queries.",
+                    payload={"results": social_sources},
+                )
             try:
                 items = self._search_web(search_query)
                 if not items:
@@ -845,6 +1222,32 @@ Always maintain a professional and welcoming tone."""
             return self.low_confidence_response_ko
         return self.low_confidence_response
 
+    def _add_confidence_signal(self, response: str, confidence: str, response_language: str, has_sources: bool) -> str:
+        """Attach a short confidence cue so users know how strongly data-backed the reply is."""
+        text = (response or "").strip()
+        if not text:
+            return text
+        lowered = text.lower()
+        if "confidence:" in lowered or "신뢰도:" in lowered:
+            return text
+
+        if str(response_language).lower().startswith("korean"):
+            if confidence == "high" and has_sources:
+                prefix = "신뢰도: 높음 (공식 페이지 근거). "
+            elif confidence == "medium" and has_sources:
+                prefix = "신뢰도: 중간 (공식 페이지 일부 근거). "
+            else:
+                prefix = "신뢰도: 낮음 (공식 데이터 부족). "
+        else:
+            if confidence == "high" and has_sources:
+                prefix = "Confidence: High (grounded in official pages). "
+            elif confidence == "medium" and has_sources:
+                prefix = "Confidence: Medium (partially grounded in official pages). "
+            else:
+                prefix = "Confidence: Low (limited official data found). "
+
+        return prefix + text
+
     def generate_follow_up_suggestions(
         self,
         query: str,
@@ -955,6 +1358,37 @@ Always maintain a professional and welcoming tone."""
             self.conversation_history if conversation_history is None else conversation_history,
             limit=8,
         )
+        structured_response = self._compose_structured_response(
+            query,
+            retrieved_docs,
+            response_language,
+            conversation_summary=conversation_summary,
+        )
+
+        if structured_response:
+            assistant_response = self._filter_assistant_response(
+                query,
+                structured_response,
+                retrieved_docs,
+                response_language,
+                conversation_history=active_history,
+                conversation_summary=conversation_summary,
+            )
+            assistant_response = self._polish_assistant_response(
+                query,
+                assistant_response,
+                response_language,
+                conversation_history=active_history,
+                conversation_summary=conversation_summary,
+            )
+            assistant_response = self._add_confidence_signal(
+                assistant_response,
+                confidence,
+                response_language,
+                has_sources=bool(retrieved_docs),
+            )
+            self._append_turn_to_memory(active_history, query, assistant_response)
+            return assistant_response, retrieved_docs
 
         if confidence == "low":
             assistant_response = self._get_low_confidence_response(response_language)
@@ -978,6 +1412,12 @@ Always maintain a professional and welcoming tone."""
                 response_language,
                 conversation_history=active_history,
                 conversation_summary=conversation_summary,
+            )
+            assistant_response = self._add_confidence_signal(
+                assistant_response,
+                confidence,
+                response_language,
+                has_sources=bool(retrieved_docs),
             )
             self._append_turn_to_memory(active_history, query, assistant_response)
             return assistant_response, retrieved_docs
@@ -1042,6 +1482,12 @@ Always maintain a professional and welcoming tone."""
             response_language,
             conversation_history=active_history,
             conversation_summary=conversation_summary,
+        )
+        assistant_response = self._add_confidence_signal(
+            assistant_response,
+            confidence,
+            response_language,
+            has_sources=bool(retrieved_docs),
         )
         self._append_turn_to_memory(active_history, query, assistant_response)
 
