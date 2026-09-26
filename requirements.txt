@@ -6,3 +6,5 @@ beautifulsoup4==4.12.3
 httpx==0.27.2
 gTTS==2.5.4
 streamlit-mic-recorder==0.0.8
+numpy==1.26.4
+sentence-transformers==2.7.0

@@ -7,12 +7,22 @@ from datetime import datetime, timedelta
 from collections import Counter
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import requests
 from groq import Groq
 
 from .knowledge_base import get_official_social_sources
+
+try:
+    import numpy as np
+except Exception:
+    np = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception:
+    SentenceTransformer = None
 
 
 @dataclass
@@ -49,7 +59,7 @@ class KyungdongRAGChatbot:
         self,
         groq_api_key: str,
         chroma_path: str = "./chroma_db",
-        model_name: str = "all-MiniLM-L6-v2",
+        model_name: str = "sentence-transformers/paraphrase-MiniLM-L3-v2",
         llm_model: str = "gemma2-9b-it"
     ):
         """Initialize chatbot with a lightweight retrieval layer."""
@@ -60,8 +70,12 @@ class KyungdongRAGChatbot:
             self.groq_client = None
         self.llm_model = llm_model
         self.fallback_llm_model = "gemma-7b-it"
+        self.embedding_model_name = model_name
+        self.embedding_model = None
+        self.embedding_index: Dict[str, Any] = {}
         self.documents_cache: List[dict] = []
         self.conversation_history = []
+        self._initialize_embedding_model()
 
         self.system_prompt = """You are a helpful admissions and campus life chatbot for Kyungdong University Global Campus in Goseong, Gangwon State.
 
@@ -172,12 +186,100 @@ Always maintain a professional and welcoming tone."""
     def reset_collection(self):
         """Clear the in-memory knowledge store."""
         self.documents_cache = []
+        self.embedding_index = {}
 
     def add_documents(self, documents: List[dict]) -> None:
         """Store processed website documents in memory."""
         self.reset_collection()
         self.documents_cache = documents.copy()
+        self._build_embedding_index(self.documents_cache)
         print(f"Loaded {len(self.documents_cache)} documents into in-memory knowledge store")
+
+    def _initialize_embedding_model(self) -> None:
+        """Initialize sentence-transformer model for semantic retrieval when available."""
+        if SentenceTransformer is None or np is None:
+            print("Hybrid retrieval note: sentence-transformers or numpy not available; running lexical mode.")
+            self.embedding_model = None
+            return
+
+        try:
+            self.embedding_model = SentenceTransformer(self.embedding_model_name)
+        except Exception as exc:
+            print(f"Hybrid retrieval note: embedding model init failed ({exc}); running lexical mode.")
+            self.embedding_model = None
+
+    def _build_embedding_index(self, documents: List[dict]) -> None:
+        """Build normalized embedding vectors for all loaded documents."""
+        self.embedding_index = {}
+        if self.embedding_model is None or np is None or not documents:
+            return
+
+        max_docs_for_index = 320
+        selected_docs = documents[:max_docs_for_index]
+        texts = []
+        ids = []
+        for doc in selected_docs:
+            doc_id = str(doc.get("id", "")).strip()
+            if not doc_id:
+                continue
+            ids.append(doc_id)
+            title = str(doc.get("title", "")).strip()
+            source = str(doc.get("source", "")).strip()
+            category = str(doc.get("category", "")).strip().replace("_", " ")
+            content = str(doc.get("content", "")).strip()[:420]
+            texts.append(f"{title}. {source}. Category: {category}. {content}")
+
+        if not texts:
+            return
+
+        try:
+            vectors = self.embedding_model.encode(
+                texts,
+                batch_size=24,
+                show_progress_bar=False,
+                normalize_embeddings=True,
+                convert_to_numpy=True,
+            )
+            if np is not None:
+                vectors = np.asarray(vectors)
+            self.embedding_index = {
+                "ids": ids,
+                "vectors": vectors,
+            }
+        except KeyboardInterrupt:
+            print("Hybrid retrieval note: embedding index build interrupted; using lexical mode.")
+            self.embedding_index = {}
+        except Exception as exc:
+            print(f"Hybrid retrieval note: embedding index build failed ({exc}); running lexical mode.")
+            self.embedding_index = {}
+
+    def _semantic_retrieve_scores(self, query: str, top_n: int = 12) -> Dict[str, float]:
+        """Return semantic similarity scores keyed by document id."""
+        if self.embedding_model is None or np is None or not self.embedding_index:
+            return {}
+
+        try:
+            query_vector = self.embedding_model.encode([query], normalize_embeddings=True)
+            query_vector = np.asarray(query_vector)[0]
+            doc_vectors = self.embedding_index.get("vectors")
+            if doc_vectors is None or len(doc_vectors) == 0:
+                return {}
+
+            similarities = np.dot(doc_vectors, query_vector)
+            ranked_indices = np.argsort(-similarities)[:top_n]
+
+            ids = self.embedding_index.get("ids", [])
+            results: Dict[str, float] = {}
+            for idx in ranked_indices:
+                if idx >= len(ids):
+                    continue
+                score = float(similarities[idx])
+                if score > 0:
+                    results[str(ids[idx])] = max(0.0, min(score, 1.0))
+            return results
+        except Exception as exc:
+            print(f"Hybrid retrieval note: semantic scoring failed ({exc}); using lexical only.")
+            return {}
 
     def retrieve_documents(
         self,
@@ -250,8 +352,38 @@ Always maintain a professional and welcoming tone."""
             if score >= score_threshold:
                 scored_documents.append((score, document))
 
-        scored_documents.sort(key=lambda item: item[0], reverse=True)
-        scored_documents = self._rerank_scored_documents(query, scored_documents)
+        lexical_scores = {doc.get("id", str(index)): score for index, (score, doc) in enumerate(scored_documents)}
+        semantic_scores = self._semantic_retrieve_scores(query, top_n=max(12, top_k * 4))
+
+        merged_by_id: Dict[str, dict] = {}
+        for _, doc in scored_documents:
+            doc_id = str(doc.get("id", ""))
+            if doc_id:
+                merged_by_id[doc_id] = doc
+        for doc_id in semantic_scores:
+            if doc_id in merged_by_id:
+                continue
+            match = next((item for item in self.documents_cache if str(item.get("id", "")) == doc_id), None)
+            if match:
+                merged_by_id[doc_id] = match
+
+        fused_documents = []
+        for doc_id, doc in merged_by_id.items():
+            lexical = float(lexical_scores.get(doc_id, 0.0))
+            semantic = float(semantic_scores.get(doc_id, 0.0))
+            fused = (0.58 * lexical) + (0.42 * semantic)
+
+            if semantic > 0.72:
+                fused += 0.08
+
+            if fused >= score_threshold:
+                fused_documents.append((min(fused, 1.0), doc))
+
+        if not fused_documents:
+            fused_documents = scored_documents
+
+        fused_documents.sort(key=lambda item: item[0], reverse=True)
+        scored_documents = self._rerank_scored_documents(query, fused_documents)
 
         results = []
         for score, document in scored_documents[:top_k]:
