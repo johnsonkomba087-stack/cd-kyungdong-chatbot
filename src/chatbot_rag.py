@@ -74,6 +74,7 @@ class KyungdongRAGChatbot:
         self.embedding_model_name = model_name
         self.embedding_model = None
         self.embedding_index: Dict[str, Any] = {}
+        self.embedding_index_ready = False
         self.embedding_model_init_attempted = False
         hybrid_mode = str(os.getenv("HYBRID_RETRIEVAL_ENABLED", "auto")).strip().lower()
         if hybrid_mode == "auto":
@@ -193,12 +194,13 @@ Always maintain a professional and welcoming tone."""
         """Clear the in-memory knowledge store."""
         self.documents_cache = []
         self.embedding_index = {}
+        self.embedding_index_ready = False
 
     def add_documents(self, documents: List[dict]) -> None:
         """Store processed website documents in memory."""
         self.reset_collection()
         self.documents_cache = documents.copy()
-        self._build_embedding_index(self.documents_cache)
+        # Keep startup fast: semantic index is built lazily on the first retrieval call.
         print(f"Loaded {len(self.documents_cache)} documents into in-memory knowledge store")
 
     def _initialize_embedding_model(self) -> None:
@@ -230,6 +232,7 @@ Always maintain a professional and welcoming tone."""
     def _build_embedding_index(self, documents: List[dict]) -> None:
         """Build normalized embedding vectors for all loaded documents."""
         self.embedding_index = {}
+        self.embedding_index_ready = False
         self._ensure_embedding_ready()
         if self.embedding_model is None or np is None or not documents:
             return
@@ -266,15 +269,27 @@ Always maintain a professional and welcoming tone."""
                 "ids": ids,
                 "vectors": vectors,
             }
+            self.embedding_index_ready = True
         except KeyboardInterrupt:
             print("Hybrid retrieval note: embedding index build interrupted; using lexical mode.")
             self.embedding_index = {}
+            self.embedding_index_ready = False
         except Exception as exc:
             print(f"Hybrid retrieval note: embedding index build failed ({exc}); running lexical mode.")
             self.embedding_index = {}
+            self.embedding_index_ready = False
+
+    def _ensure_embedding_index_ready(self) -> None:
+        """Build semantic index only when retrieval needs it."""
+        if self.embedding_index_ready:
+            return
+        if not self.documents_cache:
+            return
+        self._build_embedding_index(self.documents_cache)
 
     def _semantic_retrieve_scores(self, query: str, top_n: int = 12) -> Dict[str, float]:
         """Return semantic similarity scores keyed by document id."""
+        self._ensure_embedding_index_ready()
         if self.embedding_model is None or np is None or not self.embedding_index:
             return {}
 

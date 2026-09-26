@@ -15,3 +15,9 @@ services:
         value: 3.12.4
       - key: HYBRID_RETRIEVAL_ENABLED
         value: "true"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PIP_NO_CACHE_DIR
+        value: "false"
+      - key: PIP_DEFAULT_TIMEOUT
+        value: "120"

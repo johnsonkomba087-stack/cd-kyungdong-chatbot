@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import re
+import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -346,6 +347,7 @@ def load_groq_api_key() -> str:
 @st.cache_resource
 def initialize_chatbot():
     """Initialize chatbot once"""
+    init_start = time.perf_counter()
     groq_api_key = load_groq_api_key()
 
     if not groq_api_key:
@@ -360,18 +362,22 @@ def initialize_chatbot():
             force_refresh=False,
             status_message="📚 Loading official university website data..."
         )
+
+    print(f"Startup timing: initialize_chatbot completed in {time.perf_counter() - init_start:.2f}s")
             
     return chatbot
 
 
 def sync_knowledge_base(chatbot, force_refresh: bool, status_message: str) -> None:
     """Fetch website content and refresh the chatbot knowledge base."""
+    sync_start = time.perf_counter()
     with st.spinner(status_message):
         documents = load_knowledge_base(force_refresh=force_refresh)
         chatbot.add_documents(documents)
         st.session_state.documents_loaded = True
         st.session_state.knowledge_document_count = len(documents)
         st.session_state.knowledge_synced_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"Startup timing: sync_knowledge_base loaded {len(documents)} docs in {time.perf_counter() - sync_start:.2f}s")
 
 
 def get_chatbot():
