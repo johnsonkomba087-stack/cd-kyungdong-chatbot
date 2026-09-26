@@ -16,6 +16,19 @@ Notes:
 - Alternatives with better always-on behavior include Railway, Fly.io, and Modal.
 - Never commit secrets.toml with real keys to GitHub.
 
+### Fast Startup Mode (Render)
+To reduce long cold starts and "app not opening" behavior:
+
+1. Keep default build on requirements.txt only (no heavy embedding packages).
+2. Set HYBRID_RETRIEVAL_ENABLED=false in Render env vars.
+3. Redeploy once.
+
+If you want full hybrid retrieval later:
+
+1. Install optional packages by adding requirements-hybrid.txt to build, or install manually.
+2. Set HYBRID_RETRIEVAL_ENABLED=true.
+3. Expect slower cold starts due to model loading.
+
 ## Prerequisites
 - GitHub account (free at https://github.com)
 - Git installed on your computer

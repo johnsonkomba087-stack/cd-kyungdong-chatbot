@@ -1,0 +1,4 @@
+# Optional dependencies for semantic hybrid retrieval.
+# Install only when you want embedding-based retrieval enabled.
+
+sentence-transformers==2.7.0

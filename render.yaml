@@ -2,7 +2,7 @@ services:
   - type: web
     name: kdu-global-chatbot
     runtime: python
-    plan: free
+    plan: starter
     rootDir: .
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
@@ -13,3 +13,5 @@ services:
         sync: false
       - key: PYTHON_VERSION
         value: 3.12.4
+      - key: HYBRID_RETRIEVAL_ENABLED
+        value: "true"

@@ -3,6 +3,7 @@ Kyungdong University website-backed chatbot.
 """
 
 import re
+import os
 from datetime import datetime, timedelta
 from collections import Counter
 from dataclasses import dataclass
@@ -73,9 +74,14 @@ class KyungdongRAGChatbot:
         self.embedding_model_name = model_name
         self.embedding_model = None
         self.embedding_index: Dict[str, Any] = {}
+        self.embedding_model_init_attempted = False
+        hybrid_mode = str(os.getenv("HYBRID_RETRIEVAL_ENABLED", "auto")).strip().lower()
+        if hybrid_mode == "auto":
+            self.hybrid_retrieval_enabled = True
+        else:
+            self.hybrid_retrieval_enabled = hybrid_mode in {"true", "1", "yes", "on"}
         self.documents_cache: List[dict] = []
         self.conversation_history = []
-        self._initialize_embedding_model()
 
         self.system_prompt = """You are a helpful admissions and campus life chatbot for Kyungdong University Global Campus in Goseong, Gangwon State.
 
@@ -197,9 +203,15 @@ Always maintain a professional and welcoming tone."""
 
     def _initialize_embedding_model(self) -> None:
         """Initialize sentence-transformer model for semantic retrieval when available."""
+        if not self.hybrid_retrieval_enabled:
+            self.embedding_model = None
+            self.embedding_model_init_attempted = True
+            return
+
         if SentenceTransformer is None or np is None:
             print("Hybrid retrieval note: sentence-transformers or numpy not available; running lexical mode.")
             self.embedding_model = None
+            self.embedding_model_init_attempted = True
             return
 
         try:
@@ -207,10 +219,18 @@ Always maintain a professional and welcoming tone."""
         except Exception as exc:
             print(f"Hybrid retrieval note: embedding model init failed ({exc}); running lexical mode.")
             self.embedding_model = None
+        self.embedding_model_init_attempted = True
+
+    def _ensure_embedding_ready(self) -> None:
+        """Lazily initialize embedding model to avoid slow app startup."""
+        if self.embedding_model_init_attempted:
+            return
+        self._initialize_embedding_model()
 
     def _build_embedding_index(self, documents: List[dict]) -> None:
         """Build normalized embedding vectors for all loaded documents."""
         self.embedding_index = {}
+        self._ensure_embedding_ready()
         if self.embedding_model is None or np is None or not documents:
             return
 
