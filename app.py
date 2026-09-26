@@ -78,6 +78,8 @@ def _default_profile() -> dict:
         "tts_enabled": False,
         "tool_use_enabled": True,
         "notes": "",
+        "conversation_memory": [],
+        "conversation_summary": "",
     }
 
 
@@ -92,7 +94,11 @@ def load_user_profile(username: str) -> dict:
 def save_user_profile(username: str, profile: dict) -> None:
     payload = _read_json(PROFILE_FILE, {"users": {}})
     users = payload.setdefault("users", {})
-    users[username] = profile
+    existing = users.get(username, {})
+    merged = _default_profile()
+    merged.update(existing)
+    merged.update(profile)
+    users[username] = merged
     _write_json(PROFILE_FILE, payload)
 
 
@@ -477,11 +483,265 @@ def _serialize_messages_for_export(messages: list[dict]) -> list[dict]:
     return serialized
 
 
+def _messages_to_conversation_history(messages: list[dict], limit: int = 8) -> list[dict]:
+    """Extract role/content pairs for session-scoped conversation memory."""
+    history: list[dict] = []
+    for message in messages:
+        role = str(message.get("role", "")).strip().lower()
+        content = str(message.get("content", "")).strip()
+        if role in {"user", "assistant"} and content:
+            history.append({"role": role, "content": content})
+    return history[-limit:]
+
+
+def _profile_conversation_memory(messages: list[dict], limit: int = 12) -> list[dict]:
+    """Build a compact, persistent conversation memory for a user profile."""
+    return _messages_to_conversation_history(messages, limit=limit)
+
+
+def _build_conversation_summary(messages: list[dict], existing_summary: str = "") -> str:
+    """Create a compact summary of user goals for longer-term memory."""
+    user_messages = [
+        str(message.get("content", "")).strip()
+        for message in messages
+        if message.get("role") == "user" and str(message.get("content", "")).strip()
+    ][-12:]
+
+    if not user_messages:
+        return existing_summary
+
+    joined = " ".join(user_messages).lower()
+
+    interest_map = {
+        "undergraduate admission": ["undergraduate", "bachelor", "freshman", "admission", "apply"],
+        "graduate admission": ["graduate", "master", "phd", "postgraduate"],
+        "international student support": ["international student", "visa", "foreign student"],
+        "scholarships": ["scholarship", "financial aid", "funding"],
+        "tuition and fees": ["tuition", "fees", "payment", "cost"],
+        "housing and dormitory": ["housing", "dorm", "dormitory", "accommodation"],
+        "program selection": ["program", "major", "course", "degree"],
+        "deadlines and documents": ["deadline", "deadlines", "document", "documents", "requirement", "requirements"],
+        "student services": ["student service", "support", "career", "counseling", "counselling"],
+    }
+
+    detected_interests = [
+        label for label, keywords in interest_map.items() if any(keyword in joined for keyword in keywords)
+    ]
+
+    preference_clues = []
+    if any("english" in message.lower() for message in user_messages):
+        preference_clues.append("prefers English guidance")
+    if any("korean" in message.lower() for message in user_messages):
+        preference_clues.append("may want Korean guidance")
+    if any(any(token in message.lower() for token in ["step by step", "steps", "explain simply"]) for message in user_messages):
+        preference_clues.append("likes step-by-step explanations")
+    if any(any(token in message.lower() for token in ["quick", "short answer", "brief"]) for message in user_messages):
+        preference_clues.append("prefers concise answers")
+
+    latest_goal = user_messages[-1]
+    latest_goal = re.sub(r"\s+", " ", latest_goal).strip()
+    if len(latest_goal) > 140:
+        latest_goal = latest_goal[:137].rstrip() + "..."
+
+    summary_parts = []
+    if detected_interests:
+        summary_parts.append("User interests: " + ", ".join(detected_interests[:4]))
+    if preference_clues:
+        summary_parts.append("Preferences: " + ", ".join(preference_clues[:3]))
+    summary_parts.append(f"Latest goal: {latest_goal}")
+
+    summary = "; ".join(summary_parts)
+    return summary or existing_summary
+
+
+def apply_app_styles() -> None:
+    """Apply a cleaner, more chat-focused UI style."""
+    st.markdown(
+        """
+        <style>
+        :root {
+            --app-bg: #f5f7fb;
+            --panel-bg: rgba(255, 255, 255, 0.88);
+            --panel-border: rgba(15, 23, 42, 0.08);
+            --text-main: #172033;
+            --text-soft: #5b6474;
+            --accent: #0f766e;
+            --accent-soft: #d9f3ef;
+            --assistant-bg: #ffffff;
+            --user-bg: linear-gradient(135deg, #0f766e 0%, #155e75 100%);
+            --shadow-soft: 0 20px 45px rgba(15, 23, 42, 0.08);
+        }
+
+        .stApp {
+            background:
+                radial-gradient(circle at top left, rgba(15, 118, 110, 0.10), transparent 30%),
+                radial-gradient(circle at top right, rgba(59, 130, 246, 0.08), transparent 25%),
+                var(--app-bg);
+            color: var(--text-main);
+        }
+
+        .block-container {
+            max-width: 1120px;
+            padding-top: 2rem;
+            padding-bottom: 3rem;
+        }
+
+        .chat-shell {
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-border);
+            border-radius: 28px;
+            box-shadow: var(--shadow-soft);
+            padding: 1.4rem 1.4rem 0.5rem 1.4rem;
+            backdrop-filter: blur(14px);
+        }
+
+        .hero-panel {
+            background: linear-gradient(135deg, rgba(15, 118, 110, 0.14), rgba(255, 255, 255, 0.92));
+            border: 1px solid rgba(15, 118, 110, 0.18);
+            border-radius: 24px;
+            padding: 1.35rem 1.5rem;
+            margin-bottom: 1.2rem;
+            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+        }
+
+        .main-header {
+            margin: 0;
+            color: var(--text-main);
+            font-size: 2.1rem;
+            line-height: 1.1;
+            letter-spacing: -0.03em;
+        }
+
+        .hero-subtitle {
+            margin-top: 0.45rem;
+            color: var(--text-soft);
+            font-size: 1rem;
+        }
+
+        .hero-note {
+            margin-top: 0.85rem;
+            display: inline-block;
+            color: var(--accent);
+            background: var(--accent-soft);
+            border-radius: 999px;
+            padding: 0.38rem 0.75rem;
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+
+        div[data-testid="stChatMessage"] {
+            margin-bottom: 1rem;
+        }
+
+        div[data-testid="stChatMessage"] > div {
+            align-items: flex-start;
+            gap: 0.85rem;
+        }
+
+        div[data-testid="stChatMessage"] [data-testid="chatAvatarIcon-user"],
+        div[data-testid="stChatMessage"] [data-testid="chatAvatarIcon-assistant"] {
+            border-radius: 16px;
+            box-shadow: 0 8px 20px rgba(15, 23, 42, 0.10);
+        }
+
+        div[data-testid="stChatMessageContent"] {
+            border-radius: 22px;
+            padding: 1rem 1.1rem;
+            box-shadow: 0 10px 28px rgba(15, 23, 42, 0.07);
+            border: 1px solid rgba(15, 23, 42, 0.05);
+            line-height: 1.65;
+        }
+
+        div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) div[data-testid="stChatMessageContent"] {
+            background: var(--user-bg);
+            color: #ffffff;
+            margin-left: auto;
+            max-width: 82%;
+        }
+
+        div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) div[data-testid="stChatMessageContent"] {
+            background: var(--assistant-bg);
+            color: var(--text-main);
+            max-width: 86%;
+        }
+
+        div[data-testid="stChatMessageContent"] p {
+            margin-bottom: 0.65rem;
+        }
+
+        div[data-testid="stChatMessageContent"] p:last-child {
+            margin-bottom: 0;
+        }
+
+        .chat-memory-strip {
+            margin: 0 0 1rem 0;
+            padding: 0.85rem 1rem;
+            border-radius: 18px;
+            background: rgba(255, 255, 255, 0.72);
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            color: var(--text-soft);
+            font-size: 0.94rem;
+        }
+
+        .chat-memory-strip strong {
+            color: var(--text-main);
+        }
+
+        div[data-testid="stChatInput"] {
+            background: rgba(255, 255, 255, 0.90);
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 22px;
+            padding: 0.25rem 0.55rem;
+            box-shadow: 0 10px 28px rgba(15, 23, 42, 0.07);
+        }
+
+        section[data-testid="stSidebar"] {
+            background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(244,247,250,0.98));
+            border-right: 1px solid rgba(15, 23, 42, 0.06);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _save_current_profile_state() -> None:
+    """Persist current profile preferences and recent conversation memory."""
+    profile_name = st.session_state.get("profile_name", "guest")
+    save_user_profile(
+        profile_name,
+        {
+            "response_tone": st.session_state.get("response_tone", "Friendly"),
+            "response_detail": st.session_state.get("response_detail", "Balanced"),
+            "response_language": st.session_state.get("response_language", "English"),
+            "voice_input_enabled": st.session_state.get("voice_input_enabled", False),
+            "tts_enabled": st.session_state.get("tts_enabled", False),
+            "tool_use_enabled": st.session_state.get("tool_use_enabled", True),
+            "notes": st.session_state.get("profile_notes", ""),
+            "conversation_memory": _profile_conversation_memory(st.session_state.get("messages", []), limit=12),
+            "conversation_summary": _build_conversation_summary(
+                st.session_state.get("messages", []),
+                existing_summary=st.session_state.get("conversation_summary", ""),
+            ),
+        },
+    )
+
+
 def main():
+    apply_app_styles()
+
     # Header
-    st.markdown('<h1 class="main-header">🎓 Kyungdong University Global Campus</h1>', unsafe_allow_html=True)
-    st.markdown('<h3 style="color: #555; margin-top: -10px;">Intelligent Chatbot Assistant</h3>', unsafe_allow_html=True)
-    st.markdown("---")
+    st.markdown(
+        '''
+        <div class="hero-panel">
+            <h1 class="main-header">Kyungdong University Global Campus</h1>
+            <div class="hero-subtitle">A conversational student assistant for admissions, scholarships, campus life, and support.</div>
+            <div class="hero-note">Ask naturally. The assistant keeps recent context and profile goals in mind.</div>
+        </div>
+        <div class="chat-shell">
+        ''',
+        unsafe_allow_html=True,
+    )
     
     # Sidebar
     with st.sidebar:
@@ -520,6 +780,8 @@ def main():
             st.session_state.tts_enabled = profile["tts_enabled"]
             st.session_state.tool_use_enabled = profile["tool_use_enabled"]
             st.session_state.profile_notes = profile.get("notes", "")
+            st.session_state.messages = profile.get("conversation_memory", [])
+            st.session_state.conversation_summary = profile.get("conversation_summary", "")
 
         st.markdown("### 🧠 Chat Experience")
         st.session_state.response_tone = st.selectbox(
@@ -564,19 +826,12 @@ def main():
             help="Saved long-term with this profile.",
         )
 
+        if st.session_state.get("conversation_summary"):
+            st.caption("Conversation memory summary")
+            st.info(st.session_state.get("conversation_summary", ""))
+
         if st.button("💾 Save Profile", use_container_width=True):
-            save_user_profile(
-                st.session_state.get("profile_name", "guest"),
-                {
-                    "response_tone": st.session_state.get("response_tone", "Friendly"),
-                    "response_detail": st.session_state.get("response_detail", "Balanced"),
-                    "response_language": st.session_state.get("response_language", "English"),
-                    "voice_input_enabled": st.session_state.get("voice_input_enabled", False),
-                    "tts_enabled": st.session_state.get("tts_enabled", False),
-                    "tool_use_enabled": st.session_state.get("tool_use_enabled", True),
-                    "notes": st.session_state.get("profile_notes", ""),
-                },
-            )
+            _save_current_profile_state()
             st.success("Profile saved")
 
         with st.expander("📊 Analytics Dashboard", expanded=False):
@@ -659,7 +914,9 @@ def main():
         if st.button("🔄 Clear Chat History", use_container_width=True):
             st.session_state.messages = []
             if st.session_state.get("chatbot"):
+                st.session_state.chatbot.set_conversation_history([])
                 st.session_state.chatbot.clear_history()
+            _save_current_profile_state()
             st.success("✅ Chat history cleared!")
 
         if st.button("📥 Export Chat (JSON)", use_container_width=True):
@@ -749,6 +1006,16 @@ def main():
         st.session_state.messages = []
     if "documents_loaded" not in st.session_state:
         st.session_state.documents_loaded = False
+    if "conversation_summary" not in st.session_state:
+        st.session_state.conversation_summary = load_user_profile(
+            st.session_state.get("profile_name", "guest")
+        ).get("conversation_summary", "")
+
+    if st.session_state.get("conversation_summary"):
+        st.markdown(
+            f'<div class="chat-memory-strip"><strong>Remembered context:</strong> {st.session_state.get("conversation_summary", "")}</div>',
+            unsafe_allow_html=True,
+        )
     
     # Display conversation history
     messages = st.session_state.get("messages", [])
@@ -873,8 +1140,15 @@ def main():
         # Display user message
         with st.chat_message("user", avatar="👤"):
             st.markdown(user_input)
+
+        prior_history = _messages_to_conversation_history(st.session_state.messages[:-1], limit=8)
+        chatbot.set_conversation_history(prior_history)
         
-        moderation = chatbot.moderate_user_input(user_input)
+        moderation = chatbot.moderate_user_input(
+            user_input,
+            conversation_history=prior_history,
+            conversation_summary=st.session_state.get("conversation_summary", ""),
+        )
         topic = chatbot.infer_query_topic(user_input)
 
         # Generate response
@@ -922,11 +1196,14 @@ def main():
                             "tone": st.session_state.get("response_tone", "Friendly"),
                             "detail_level": st.session_state.get("response_detail", "Balanced"),
                             "response_language": resolved_language,
+                            "profile_notes": st.session_state.get("profile_notes", ""),
+                            "conversation_summary": st.session_state.get("conversation_summary", ""),
                         }
                         response, docs_used = chatbot.generate_response(
                             user_input,
                             retrieved_docs,
                             style_options=style_options,
+                            conversation_history=prior_history,
                         )
 
                 unknown = "i don't know based on official data currently loaded" in response.lower()
@@ -970,19 +1247,6 @@ def main():
                 }
             )
 
-            save_user_profile(
-                st.session_state.get("profile_name", "guest"),
-                {
-                    "response_tone": st.session_state.get("response_tone", "Friendly"),
-                    "response_detail": st.session_state.get("response_detail", "Balanced"),
-                    "response_language": st.session_state.get("response_language", "English"),
-                    "voice_input_enabled": st.session_state.get("voice_input_enabled", False),
-                    "tts_enabled": st.session_state.get("tts_enabled", False),
-                    "tool_use_enabled": st.session_state.get("tool_use_enabled", True),
-                    "notes": st.session_state.get("profile_notes", ""),
-                },
-            )
-            
             # Store message with sources
             st.session_state.messages.append({
                 "role": "assistant",
@@ -993,6 +1257,14 @@ def main():
                 "tool_payload": tool_payload,
                 "event_id": event_id,
             })
+            chatbot.set_conversation_history(_messages_to_conversation_history(st.session_state.messages, limit=8))
+            st.session_state.conversation_summary = _build_conversation_summary(
+                st.session_state.messages,
+                existing_summary=st.session_state.get("conversation_summary", ""),
+            )
+            _save_current_profile_state()
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
