@@ -28,11 +28,13 @@ echo "📥 Installing dependencies..."
 pip install -q -r requirements.txt
 
 echo ""
+PORT="${PORT:-8501}"
+
 echo "🚀 Starting Streamlit app..."
-echo "📍 Open your browser to: http://localhost:8501"
+echo "📍 Open your browser to: http://localhost:${PORT}"
 echo ""
 echo "⏹️  Press Ctrl+C to stop"
 echo ""
 
 # Run Streamlit
-streamlit run app.py
+streamlit run app.py --server.headless true --server.address 0.0.0.0 --server.port "${PORT}"

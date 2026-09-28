@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: cd-kyungdong-chatbot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash run.sh
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: GROQ_API_KEY
+        sync: false
