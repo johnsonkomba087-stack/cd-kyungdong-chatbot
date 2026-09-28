@@ -61,7 +61,8 @@ class KyungdongRAGChatbot:
         groq_api_key: str,
         chroma_path: str = "./chroma_db",
         model_name: str = "sentence-transformers/paraphrase-MiniLM-L3-v2",
-        llm_model: str = "gemma2-9b-it"
+        llm_model: str | None = None,
+        fallback_llm_model: str | None = None,
     ):
         """Initialize chatbot with a lightweight retrieval layer."""
         try:
@@ -69,8 +70,12 @@ class KyungdongRAGChatbot:
         except Exception as exc:
             print(f"Warning: Groq client initialization failed: {exc}")
             self.groq_client = None
-        self.llm_model = llm_model
-        self.fallback_llm_model = "gemma-7b-it"
+        default_llm_model = str(os.getenv("GROQ_LLM_MODEL", "openai/gpt-oss-120b")).strip() or "openai/gpt-oss-120b"
+        default_fallback_model = str(os.getenv("GROQ_FALLBACK_LLM_MODEL", "openai/gpt-oss-20b")).strip() or "openai/gpt-oss-20b"
+        self.llm_model = str(llm_model or default_llm_model).strip() or default_llm_model
+        self.fallback_llm_model = str(fallback_llm_model or default_fallback_model).strip()
+        if self.fallback_llm_model == self.llm_model:
+            self.fallback_llm_model = ""
         self.embedding_model_name = model_name
         self.embedding_model = None
         self.embedding_index: Dict[str, Any] = {}
@@ -320,13 +325,19 @@ Always maintain a professional and welcoming tone."""
         self,
         query: str,
         top_k: int = 3,
-        score_threshold: float = 0.2
+        score_threshold: float = 0.2,
+        conversation_history: List[Dict] | None = None,
+        conversation_summary: str = "",
     ) -> List[RetrievedDocument]:
         """Retrieve relevant documents using lightweight lexical matching."""
         if not self.documents_cache:
             return []
 
-        rewritten_query = self._rewrite_query_for_retrieval(query)
+        rewritten_query = self._build_retrieval_query(
+            query,
+            conversation_history=conversation_history,
+            conversation_summary=conversation_summary,
+        )
         query_terms = self._expand_query_terms(self._tokenize(rewritten_query))
         if not self._is_domain_query(query_terms):
             return []
@@ -497,6 +508,44 @@ Always maintain a professional and welcoming tone."""
         if not additions:
             return query
         return f"{query} {' '.join(additions)}"
+
+    def _get_recent_domain_history(self, conversation_history: List[Dict] | None, limit: int = 2) -> List[str]:
+        """Return recent user turns that carry enough KDU context for follow-up retrieval."""
+        snippets: List[str] = []
+        normalized = self._normalize_history(conversation_history, limit=8)
+        for message in reversed(normalized):
+            if message["role"] != "user":
+                continue
+            content = message["content"].strip()
+            if not content or not self._is_domain_query(self._tokenize(content)):
+                continue
+            snippets.append(content)
+            if len(snippets) >= limit:
+                break
+        snippets.reverse()
+        return snippets
+
+    def _build_retrieval_query(
+        self,
+        query: str,
+        conversation_history: List[Dict] | None = None,
+        conversation_summary: str = "",
+    ) -> str:
+        """Enrich short follow-up questions with recent domain context before retrieval."""
+        rewritten_query = self._rewrite_query_for_retrieval(query)
+        query_terms = self._expand_query_terms(self._tokenize(rewritten_query))
+        if self._is_domain_query(query_terms):
+            return rewritten_query
+
+        if not self._is_supported_query(query, conversation_history, conversation_summary):
+            return rewritten_query
+
+        context_parts: List[str] = []
+        if self._summary_is_domain_related(conversation_summary):
+            context_parts.append(conversation_summary.strip())
+        context_parts.extend(self._get_recent_domain_history(conversation_history, limit=2))
+        context_parts.append(query)
+        return " ".join(part for part in context_parts if part)
 
     def _infer_intent_category(self, query_terms: List[str]) -> str:
         """Infer likely knowledge category from query tokens."""
@@ -1370,6 +1419,8 @@ Always maintain a professional and welcoming tone."""
         """Call Groq with a specific model, with fallback on errors."""
         if self.groq_client is None:
             raise RuntimeError("Groq client is unavailable")
+        if not model_name:
+            raise RuntimeError("Groq model is not configured")
         try:
             print(f"Calling Groq with model: {model_name}")
             return self.groq_client.chat.completions.create(
@@ -1688,6 +1739,8 @@ Always maintain a professional and welcoming tone."""
         except Exception as first_error:
             print(f"[Groq] Primary model failed: {first_error}")
             try:
+                if not self.fallback_llm_model:
+                    raise RuntimeError("No alternate Groq fallback model configured")
                 response = self._generate_with_model(messages, self.fallback_llm_model)
                 assistant_response = response.choices[0].message.content
             except Exception as second_error:
@@ -1722,10 +1775,25 @@ Always maintain a professional and welcoming tone."""
 
         return assistant_response, retrieved_docs
 
-    def chat(self, user_query: str) -> Tuple[str, List[RetrievedDocument]]:
+    def chat(
+        self,
+        user_query: str,
+        conversation_history: List[Dict] | None = None,
+        conversation_summary: str = "",
+    ) -> Tuple[str, List[RetrievedDocument]]:
         """Main chat method: retrieve then generate."""
-        retrieved_docs = self.retrieve_documents(user_query)
-        response, docs = self.generate_response(user_query, retrieved_docs)
+        retrieved_docs = self.retrieve_documents(
+            user_query,
+            conversation_history=conversation_history,
+            conversation_summary=conversation_summary,
+        )
+        style_options = {"conversation_summary": conversation_summary} if conversation_summary else None
+        response, docs = self.generate_response(
+            user_query,
+            retrieved_docs,
+            style_options=style_options,
+            conversation_history=conversation_history,
+        )
         return response, docs
 
     def clear_history(self) -> None:

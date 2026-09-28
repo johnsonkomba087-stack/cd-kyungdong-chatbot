@@ -1235,7 +1235,12 @@ def main():
                 else:
                     with st.spinner("🔍 Searching official sources..."):
                         try:
-                            retrieved_docs = chatbot.retrieve_documents(user_input, top_k=3)
+                            retrieved_docs = chatbot.retrieve_documents(
+                                user_input,
+                                top_k=3,
+                                conversation_history=prior_history,
+                                conversation_summary=st.session_state.get("conversation_summary", ""),
+                            )
                         except Exception as exc:
                             retrieved_docs = []
                             st.warning("I could not search official sources right now. I will answer cautiously.")

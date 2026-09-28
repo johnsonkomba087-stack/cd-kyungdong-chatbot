@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 from src.chatbot_rag import KyungdongRAGChatbot
 from src.knowledge_base import load_knowledge_base
@@ -23,6 +23,8 @@ class RetrievalTestCase:
     expected_sources: List[str]
     expected_categories: List[str]
     expected_terms: List[str]
+    conversation_history: List[Dict[str, str]] | None = None
+    conversation_summary: str = ""
 
 
 TEST_CASES: List[RetrievalTestCase] = [
@@ -96,11 +98,29 @@ TEST_CASES: List[RetrievalTestCase] = [
         expected_categories=["campus_life"],
         expected_terms=["wifi", "cafeteria", "gym"],
     ),
+    RetrievalTestCase(
+        name="tuition_follow_up",
+        query="how much is it?",
+        expected_sources=["Admissions: Scholarships and Fees"],
+        expected_categories=["fees"],
+        expected_terms=["tuition", "$4,000", "$5,000"],
+        conversation_history=[
+            {"role": "user", "content": "Tell me about tuition fees for international students."},
+            {"role": "assistant", "content": "Tuition details depend on the official fee schedule."},
+        ],
+        conversation_summary="The conversation is about KDU tuition and fees for international students.",
+    ),
 ]
 
 
 def evaluate_case(bot: KyungdongRAGChatbot, case: RetrievalTestCase, k: int = 5) -> dict:
-    docs = bot.retrieve_documents(case.query, top_k=k, score_threshold=0.1)
+    docs = bot.retrieve_documents(
+        case.query,
+        top_k=k,
+        score_threshold=0.1,
+        conversation_history=case.conversation_history,
+        conversation_summary=case.conversation_summary,
+    )
 
     source_hit = False
     category_hit = False
