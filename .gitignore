@@ -54,6 +54,9 @@ __pycache__/
 *.py[cod]
 *.so
 .Python
+.env
+.env.*
+!.env.example
 env/
 venv/
 ENV/
@@ -64,7 +67,9 @@ build/
 
 # Streamlit
 .streamlit/secrets.toml
+toml .streamlit/secrets.toml
 .streamlit/cache/
+.cache/
 chroma_db/
 .chroma/
 *.sqlite3
