@@ -39,7 +39,7 @@ class KyungdongRAGChatbot:
         )
         
         # System prompt for university context
-self.system_prompt = """You are the official-style AI information assistant for Kyungdong University Global Campus.
+        self.system_prompt = """You are the official-style AI information assistant for Kyungdong University Global Campus.
 
 Your goals:
 - Give accurate, useful, and well-reasoned answers about the university.
