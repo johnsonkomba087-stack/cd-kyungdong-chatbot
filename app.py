@@ -46,7 +46,14 @@ st.set_page_config(
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.chatbot_rag import KyungdongRAGChatbot
-from src.knowledge_base import get_official_social_sources, get_official_source_pages, load_knowledge_base
+from src.knowledge_base import (
+    add_custom_document,
+    delete_custom_document,
+    get_official_social_sources,
+    get_official_source_pages,
+    load_custom_documents,
+    load_knowledge_base,
+)
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -916,6 +923,31 @@ def main():
                         mime="application/json",
                         use_container_width=True,
                     )
+                    st.markdown("**➕ Add Knowledge**")
+                    with st.form("add_knowledge_form", clear_on_submit=True):
+                        new_title = st.text_input("Title")
+                        new_category = st.text_input("Category", value="general")
+                        new_content = st.text_area("Content", height=160)
+                        if st.form_submit_button("Save Knowledge", use_container_width=True):
+                            try:
+                                add_custom_document(new_title, new_content, new_category)
+                                if st.session_state.get("chatbot"):
+                                    st.session_state.chatbot.add_documents(
+                                        load_knowledge_base(
+                                            include_social=st.session_state.get("include_social_sources", True)
+                                        )
+                                    )
+                                st.success("Knowledge added")
+                            except ValueError as exc:
+                                st.error(str(exc))
+                    for custom_doc in load_custom_documents():
+                        if st.button(f"🗑️ {custom_doc.get('title', '')[:40]}", key=f"del_{custom_doc['id']}", use_container_width=True):
+                            delete_custom_document(custom_doc["id"])
+                            if st.session_state.get("chatbot"):
+                                st.session_state.chatbot.add_documents(
+                                    load_knowledge_base(include_social=st.session_state.get("include_social_sources", True))
+                                )
+                            st.rerun()
                     if st.button("Logout Admin", use_container_width=True):
                         st.session_state.admin_authenticated = False
                         st.info("Admin logged out")
