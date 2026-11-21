@@ -20,6 +20,7 @@ from bs4 import BeautifulSoup
 CACHE_DIR = Path(__file__).resolve().parents[1] / ".cache"
 CACHE_FILE = CACHE_DIR / "official_knowledge_base.json"
 SOCIAL_CACHE_FILE = CACHE_DIR / "official_social_knowledge_base.json"
+CUSTOM_KNOWLEDGE_FILE = CACHE_DIR / "custom_knowledge.json"
 DEFAULT_CACHE_TTL_HOURS = 12
 DEFAULT_SOCIAL_CACHE_TTL_HOURS = 3
 HTTP_TIMEOUT_SECONDS = 20
@@ -467,7 +468,7 @@ def get_official_social_sources() -> List[dict]:
     ]
 
 
-def load_knowledge_base(
+def _load_official_documents(
     force_refresh: bool = False,
     cache_ttl_hours: int = DEFAULT_CACHE_TTL_HOURS,
     include_social: bool = True,
@@ -512,3 +513,49 @@ def load_knowledge_base(
         social_documents = _load_social_documents(force_refresh=force_refresh, cache_ttl_hours=social_cache_ttl_hours)
         return fallback_documents + social_documents
     return fallback_documents
+
+
+def load_custom_documents() -> List[dict]:
+    """Load admin-added knowledge entries (persisted separately from the refreshable web cache)."""
+    return _load_cache(CUSTOM_KNOWLEDGE_FILE)
+
+
+def add_custom_document(title: str, content: str, category: str = "general") -> dict:
+    """Persist a manually added knowledge entry and return it."""
+    title = title.strip()
+    content = _normalize_text(content)
+    if not title or not content:
+        raise ValueError("Both title and content are required.")
+    digest = hashlib.sha1(f"{title}:{content}".encode("utf-8")).hexdigest()[:16]
+    document = {
+        "id": f"custom_{digest}",
+        "content": content,
+        "source": f"{title} (Added by Admin)",
+        "category": category.strip() or "general",
+        "url": "",
+        "title": title,
+    }
+    existing = [doc for doc in load_custom_documents() if doc.get("id") != document["id"]]
+    _save_cache(existing + [document], CUSTOM_KNOWLEDGE_FILE)
+    return document
+
+
+def delete_custom_document(doc_id: str) -> None:
+    remaining = [doc for doc in load_custom_documents() if doc.get("id") != doc_id]
+    _save_cache(remaining, CUSTOM_KNOWLEDGE_FILE)
+
+
+def load_knowledge_base(
+    force_refresh: bool = False,
+    cache_ttl_hours: int = DEFAULT_CACHE_TTL_HOURS,
+    include_social: bool = True,
+    social_cache_ttl_hours: int = DEFAULT_SOCIAL_CACHE_TTL_HOURS,
+) -> List[dict]:
+    """Load official/social knowledge plus admin-added custom entries."""
+    documents = _load_official_documents(
+        force_refresh=force_refresh,
+        cache_ttl_hours=cache_ttl_hours,
+        include_social=include_social,
+        social_cache_ttl_hours=social_cache_ttl_hours,
+    )
+    return documents + load_custom_documents()
